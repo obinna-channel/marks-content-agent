@@ -1,17 +1,24 @@
 """Slack bot for handling commands via messages."""
+print("[SLACKBOT] Module loading...", flush=True)
 
 import re
 import asyncio
+import sys
+import traceback
 from typing import Optional
 
+print("[SLACKBOT] Importing slack_bolt...", flush=True)
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
+print("[SLACKBOT] Importing local modules...", flush=True)
 from src.config import get_settings
 from src.services.account_service import AccountService
 from src.services.voice_sampler import get_voice_sampler
 from src.models.content import MonitoredAccountCreate, AccountCategory
 from src.integrations.twitter import get_twitter_client
+
+print("[SLACKBOT] All imports complete", flush=True)
 
 
 class SlackBot:
@@ -335,7 +342,17 @@ class SlackBot:
 
 def run_slack_bot():
     """Run the Slack bot."""
-    print("Initializing Slack bot...", flush=True)
-    bot = SlackBot()
-    print("Slack bot initialized, starting Socket Mode...", flush=True)
-    bot.start()
+    try:
+        print("[SLACKBOT] Initializing Slack bot...", flush=True)
+        bot = SlackBot()
+        print("[SLACKBOT] Bot initialized, starting Socket Mode...", flush=True)
+        bot.start()
+    except Exception as e:
+        print(f"[SLACKBOT] ERROR: {e}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    print("[SLACKBOT] Running as main module", flush=True)
+    run_slack_bot()
