@@ -329,11 +329,13 @@ class SlackBot:
     def start(self):
         """Start the Slack bot."""
         handler = SocketModeHandler(self.app, self.app_token)
-        print("Starting Slack bot...")
+        print("Starting Slack bot via Socket Mode...", flush=True)
         handler.start()
 
 
 def run_slack_bot():
     """Run the Slack bot."""
+    print("Initializing Slack bot...", flush=True)
     bot = SlackBot()
+    print("Slack bot initialized, starting Socket Mode...", flush=True)
     bot.start()
