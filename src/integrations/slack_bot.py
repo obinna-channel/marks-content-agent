@@ -683,12 +683,21 @@ class SlackBot:
 
     def _is_approval_signal(self, text: str) -> bool:
         """Check if message signals approval."""
-        approval_phrases = [
-            "perfect", "done", "approved", "use this", "looks good",
-            "that works", "love it", "great", "finalize", "lock it",
-            "ship it", "good to go", "lgtm", "yes", "👍", "✅"
-        ]
         text_lower = text.lower().strip()
+
+        # Exact matches for short phrases (avoid false positives)
+        exact_matches = ["good", "nice", "yes", "yep", "ok", "okay", "👍", "✅"]
+        if text_lower in exact_matches:
+            return True
+
+        # Phrase matches (can be part of longer text)
+        approval_phrases = [
+            "this is good", "that's good", "thats good", "looks good", "is good",
+            "perfect", "done", "approved", "use this", "use it",
+            "that works", "this works", "love it", "love this",
+            "great", "finalize", "lock it", "ship it", "good to go",
+            "lgtm", "let's go", "lets go", "all good", "we're good",
+        ]
         return any(phrase in text_lower for phrase in approval_phrases)
 
     async def _handle_revision_request(self, say, thread_ts: str, request: str):
