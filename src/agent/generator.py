@@ -17,6 +17,7 @@ from src.models.content import (
 from src.services.history_service import HistoryService
 from src.services.marks_api import MarksAPIClient, get_marks_client
 from src.services.voice_sampler import VoiceSamplerService, get_voice_sampler
+from src.services.feedback_service import FeedbackService, get_feedback_service
 from .prompts import get_weekly_batch_prompt
 from .variety import VarietyManager, get_variety_manager
 
@@ -31,6 +32,7 @@ class ContentGenerator:
         marks_client: Optional[MarksAPIClient] = None,
         variety_manager: Optional[VarietyManager] = None,
         voice_sampler: Optional[VoiceSamplerService] = None,
+        feedback_service: Optional[FeedbackService] = None,
     ):
         settings = get_settings()
         self.api_key = api_key or settings.anthropic_api_key
@@ -39,6 +41,7 @@ class ContentGenerator:
         self.marks_client = marks_client or get_marks_client()
         self.variety_manager = variety_manager or get_variety_manager()
         self.voice_sampler = voice_sampler or get_voice_sampler()
+        self.feedback_service = feedback_service or get_feedback_service()
 
     def _get_client(self) -> anthropic.Anthropic:
         """Get or create the Anthropic client."""
@@ -123,6 +126,17 @@ class ContentGenerator:
             )
         except Exception as e:
             print(f"Error fetching voice samples: {e}")
+            return ""
+
+    async def _get_feedback_string(self, pillar: Optional[ContentPillar] = None) -> str:
+        """Get stored feedback for prompt."""
+        try:
+            return await self.feedback_service.get_feedback_for_prompt(
+                pillar=pillar,
+                limit=5,
+            )
+        except Exception as e:
+            print(f"Error fetching feedback: {e}")
             return ""
 
     async def generate_weekly_batch(
@@ -247,11 +261,15 @@ class ContentGenerator:
         avoid_topics = await self._get_avoid_topics_string()
         # Get voice samples filtered by this pillar
         voice_samples = await self._get_voice_samples_string(pillar=pillar.value)
+        # Get stored feedback for this pillar
+        stored_feedback = await self._get_feedback_string(pillar=pillar)
 
         # Build voice section
         voice_section = ""
         if voice_samples:
             voice_section = f"\n{voice_samples}\n"
+        if stored_feedback:
+            voice_section += f"\n{stored_feedback}\n"
         if voice_feedback:
             voice_section += f"\n{voice_feedback}\n"
 

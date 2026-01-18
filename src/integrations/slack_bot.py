@@ -15,6 +15,7 @@ print("[SLACKBOT] Importing local modules...", flush=True)
 from src.config import get_settings
 from src.services.account_service import AccountService
 from src.services.voice_sampler import get_voice_sampler
+from src.services.feedback_service import get_feedback_service
 from src.models.content import MonitoredAccountCreate, AccountCategory, ContentPillar
 from src.integrations.twitter import get_twitter_client
 from src.agent.generator import get_content_generator
@@ -31,8 +32,12 @@ class SlackBot:
         self.app_token = settings.slack_app_token
         self.account_service = AccountService()
         self.voice_sampler = get_voice_sampler()
+        self.feedback_service = get_feedback_service()
         self.twitter = get_twitter_client()
         self.generator = get_content_generator()
+
+        # Track generated posts for feedback (message_ts -> {pillar, content})
+        self.generated_posts = {}
 
         # Register message handlers
         self._register_handlers()
@@ -106,6 +111,24 @@ class SlackBot:
         def handle_help(message, say):
             """Handle !help"""
             self._show_help(say)
+
+        @self.app.event("message")
+        def handle_thread_reply(event, say):
+            """Handle thread replies for feedback on generated posts."""
+            # Only process thread replies (messages with thread_ts that differs from ts)
+            thread_ts = event.get("thread_ts")
+            message_ts = event.get("ts")
+            text = event.get("text", "")
+
+            # Skip if not a thread reply or if it's a command
+            if not thread_ts or thread_ts == message_ts:
+                return
+            if text.startswith("!"):
+                return
+
+            # Check if this is a reply to a generated post
+            if thread_ts in self.generated_posts:
+                asyncio.run(self._store_feedback(say, thread_ts, text))
 
     async def _add_voice_reference(self, say, handle: str, pillars: list):
         """Add a voice reference account with optional pillar tags."""
@@ -347,12 +370,50 @@ class SlackBot:
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": f"```{result.get('content', 'No content generated')}```"}
                 },
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": "💬 _Reply in thread to give feedback on this post_"}]
+                },
             ]
 
-            say(blocks=blocks, text=f"Generated post: {result.get('topic', '')}")
+            response = say(blocks=blocks, text=f"Generated post: {result.get('topic', '')}")
+
+            # Track this message for feedback
+            if response and response.get("ts"):
+                self.generated_posts[response["ts"]] = {
+                    "pillar": pillar,
+                    "content": result.get("content", ""),
+                    "topic": result.get("topic", ""),
+                }
 
         except Exception as e:
             say(f"❌ Error generating post: {str(e)}")
+
+    async def _store_feedback(self, say, thread_ts: str, feedback_text: str):
+        """Store feedback from a thread reply."""
+        try:
+            post_info = self.generated_posts.get(thread_ts)
+            if not post_info:
+                return
+
+            pillar = ContentPillar(post_info["pillar"])
+            original_content = post_info["content"]
+
+            await self.feedback_service.create(
+                pillar=pillar,
+                original_content=original_content,
+                feedback_text=feedback_text,
+                slack_thread_ts=thread_ts,
+            )
+
+            # Reply in thread to confirm
+            say(
+                text="✅ Feedback recorded! This will be used to improve future content generation.",
+                thread_ts=thread_ts,
+            )
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error storing feedback: {e}", flush=True)
 
     def _show_help(self, say):
         """Show help message."""
