@@ -333,6 +333,128 @@ Return JSON: {{"topic": "...", "angle": "...", "content": "..."}}"""
             print(f"Error generating single post: {e}")
             raise
 
+    async def revise_content(
+        self,
+        pillar: ContentPillar,
+        messages: List[Dict[str, str]],
+    ) -> str:
+        """
+        Revise content based on conversation history.
+
+        Args:
+            pillar: The content pillar
+            messages: Conversation history with drafts and revision requests
+
+        Returns:
+            Revised content string
+        """
+        marks_context = self._get_marks_context()
+
+        system_prompt = f"""You are revising social media content for Marks Exchange, a perpetual futures platform for stablecoin FX markets.
+
+{marks_context}
+
+The user will provide the original draft and revision requests.
+Apply the requested changes while maintaining the core message and brand voice.
+Keep the content concise and engaging for Twitter/X.
+
+Return ONLY the revised content text, no explanation or formatting."""
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model="claude-opus-4-5-20251101",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=messages,
+            )
+
+            return response.content[0].text.strip()
+
+        except Exception as e:
+            print(f"Error revising content: {e}")
+            raise
+
+    async def extract_learnings(
+        self,
+        pillar: ContentPillar,
+        drafts: List[Dict[str, Any]],
+    ) -> List[str]:
+        """
+        Extract generalizable learnings from revision history.
+
+        Args:
+            pillar: The content pillar
+            drafts: List of draft versions with revision requests
+
+        Returns:
+            List of learning strings
+        """
+        # Build the revision history
+        history = []
+        for i, draft in enumerate(drafts):
+            if i == 0:
+                history.append(f"Original draft:\n{draft['content']}")
+            else:
+                if draft.get("revision_request"):
+                    history.append(f"\nUser requested: {draft['revision_request']}")
+                history.append(f"Revised to:\n{draft['content']}")
+
+        pillar_name = pillar.value.replace("_", " ")
+
+        prompt = f"""Analyze this content revision history and extract GENERALIZABLE style preferences.
+
+{chr(10).join(history)}
+
+Rules:
+- Only extract preferences that should apply to ALL future {pillar_name} posts
+- Ignore one-off requests (like "mention the naira" - too specific to this post)
+- Focus on tone, style, length, formatting, emoji usage preferences
+- Be concise - each learning should be 3-6 words
+- Return as JSON array of strings
+- If no generalizable learnings found, return empty array []
+
+Examples of GOOD learnings:
+- "Minimal or no emojis"
+- "Professional, serious tone"
+- "Keep under 200 characters"
+- "Use bullet points for lists"
+- "Avoid promotional plugs"
+- "More conversational style"
+
+Examples of BAD learnings (too specific, don't include):
+- "Mention the naira" (one-off topic)
+- "Talk about funding rates" (specific content)
+- "Add the link" (one-time request)
+
+Return ONLY a JSON array, no other text:"""
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            response_text = response.content[0].text.strip()
+
+            # Handle markdown code blocks
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
+            return json.loads(response_text)
+
+        except json.JSONDecodeError as e:
+            print(f"Error parsing learnings response: {e}")
+            return []
+        except Exception as e:
+            print(f"Error extracting learnings: {e}")
+            return []
+
 
 # Singleton instance
 _content_generator: Optional[ContentGenerator] = None

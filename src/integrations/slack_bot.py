@@ -5,7 +5,8 @@ import re
 import asyncio
 import sys
 import traceback
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional, List, Dict
 
 print("[SLACKBOT] Importing slack_bolt...", flush=True)
 from slack_bolt import App
@@ -40,6 +41,9 @@ class SlackBot:
 
         # Track generated posts for feedback (message_ts -> {pillar, content})
         self.generated_posts = {}
+
+        # Track draft sessions for iterative refinement (thread_ts -> session)
+        self.draft_sessions = {}
 
         # Track pending confirmations for ambiguous intents (user_id -> {intent, entities})
         self.pending_confirmations = {}
@@ -137,14 +141,45 @@ class SlackBot:
             if text.startswith("!"):
                 return
 
-            # Handle thread replies (feedback on generated posts)
+            # Handle thread replies
             if thread_ts and thread_ts != message_ts:
-                if thread_ts in self.generated_posts:
+                # Check if this is a draft session (iterative refinement)
+                if thread_ts in self.draft_sessions:
+                    asyncio.run(self._handle_draft_reply(say, thread_ts, text, user_id))
+                # Legacy: feedback on old-style generated posts
+                elif thread_ts in self.generated_posts:
                     asyncio.run(self._store_feedback(say, thread_ts, text))
                 return
 
             # Handle natural language messages (not in thread, not a command)
             asyncio.run(self._handle_natural_language(say, text, user_id))
+
+        @self.app.event("reaction_added")
+        def handle_reaction(event, say):
+            """Handle reactions - specifically ✅ for approval."""
+            reaction = event.get("reaction", "")
+            # Check for checkmark reactions
+            if reaction not in ["white_check_mark", "heavy_check_mark", "+1", "thumbsup"]:
+                return
+
+            item = event.get("item", {})
+            channel = item.get("channel")
+            # The message_ts of the message that was reacted to
+            reacted_ts = item.get("ts")
+
+            if not reacted_ts or not channel:
+                return
+
+            # Check if any draft session contains this message
+            for thread_ts, session in self.draft_sessions.items():
+                if session.get("status") == "iterating":
+                    # Check if reaction was on any draft in this session
+                    drafts = session.get("drafts", [])
+                    if drafts:
+                        last_draft_ts = drafts[-1].get("message_ts")
+                        if last_draft_ts == reacted_ts or thread_ts == reacted_ts:
+                            asyncio.run(self._handle_approval(say, thread_ts, channel))
+                            return
 
     async def _handle_natural_language(self, say, text: str, user_id: str):
         """Parse and handle natural language messages."""
@@ -531,7 +566,7 @@ class SlackBot:
         except Exception as e:
             say(f"❌ Error: {str(e)}")
 
-    async def _generate_post(self, say, pillar: str, topic: str = None):
+    async def _generate_post(self, say, pillar: str, topic: str = None, user_id: str = None):
         """Generate a post for a given pillar."""
         try:
             # Validate pillar
@@ -549,6 +584,9 @@ class SlackBot:
                 topic_hint=topic,
             )
 
+            content = result.get("content", "No content generated")
+            topic_result = result.get("topic", "N/A")
+
             # Format and send the result
             blocks = [
                 {
@@ -557,28 +595,42 @@ class SlackBot:
                 },
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"*Topic:* {result.get('topic', 'N/A')}"}
+                    "text": {"type": "mrkdwn", "text": f"*Topic:* {topic_result}"}
                 },
                 {"type": "divider"},
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"```{result.get('content', 'No content generated')}```"}
+                    "text": {"type": "mrkdwn", "text": f"```{content}```"}
                 },
                 {
                     "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": "💬 _Reply in thread to give feedback on this post_"}]
+                    "elements": [{"type": "mrkdwn", "text": "💬 _Reply in thread to refine, react ✅ when done_"}]
                 },
             ]
 
-            response = say(blocks=blocks, text=f"Generated post: {result.get('topic', '')}")
+            response = say(blocks=blocks, text=f"Generated post: {topic_result}")
 
-            # Track this message for feedback
+            # Create draft session for iterative refinement
             if response and response.get("ts"):
-                self.generated_posts[response["ts"]] = {
+                thread_ts = response["ts"]
+                self.draft_sessions[thread_ts] = {
                     "pillar": pillar,
-                    "content": result.get("content", ""),
-                    "topic": result.get("topic", ""),
+                    "topic": topic_result,
+                    "user_id": user_id,
+                    "drafts": [
+                        {
+                            "version": 0,
+                            "content": content,
+                            "revision_request": None,
+                            "message_ts": thread_ts,
+                        }
+                    ],
+                    "status": "iterating",
+                    "created_at": datetime.now(timezone.utc),
                 }
+
+                # Cleanup old sessions
+                await self._cleanup_old_sessions()
 
         except Exception as e:
             say(f"❌ Error generating post: {str(e)}")
@@ -608,6 +660,213 @@ class SlackBot:
 
         except Exception as e:
             print(f"[SLACKBOT] Error storing feedback: {e}", flush=True)
+
+    async def _handle_draft_reply(self, say, thread_ts: str, text: str, user_id: str):
+        """Handle replies in a draft session thread."""
+        session = self.draft_sessions.get(thread_ts)
+        if not session:
+            return
+
+        try:
+            # Route based on session status
+            if session["status"] == "iterating":
+                if self._is_approval_signal(text):
+                    await self._handle_approval(say, thread_ts)
+                else:
+                    await self._handle_revision_request(say, thread_ts, text)
+
+            elif session["status"] == "learnings_pending":
+                await self._handle_learning_confirmation(say, thread_ts, text)
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error handling draft reply: {e}", flush=True)
+
+    def _is_approval_signal(self, text: str) -> bool:
+        """Check if message signals approval."""
+        approval_phrases = [
+            "perfect", "done", "approved", "use this", "looks good",
+            "that works", "love it", "great", "finalize", "lock it",
+            "ship it", "good to go", "lgtm", "yes", "👍", "✅"
+        ]
+        text_lower = text.lower().strip()
+        return any(phrase in text_lower for phrase in approval_phrases)
+
+    async def _handle_revision_request(self, say, thread_ts: str, request: str):
+        """Handle a revision request in a draft thread."""
+        session = self.draft_sessions.get(thread_ts)
+        if not session:
+            return
+
+        # Check revision limit
+        if len(session["drafts"]) >= 10:
+            say(
+                text="You've reached the revision limit (10). Consider starting fresh with a new generation.",
+                thread_ts=thread_ts,
+            )
+            return
+
+        try:
+            # Build conversation history for revision
+            messages = self._build_revision_messages(session, request)
+
+            # Get revision from Claude
+            revised_content = await self.generator.revise_content(
+                pillar=ContentPillar(session["pillar"]),
+                messages=messages,
+            )
+
+            version = len(session["drafts"])
+
+            # Post the revision
+            response = say(
+                text=f"📝 *Revision {version}*\n```{revised_content}```\n\n_Reply to refine more, react ✅ when done_",
+                thread_ts=thread_ts,
+            )
+
+            # Store new draft
+            session["drafts"].append({
+                "version": version,
+                "content": revised_content,
+                "revision_request": request,
+                "message_ts": response.get("ts") if response else None,
+            })
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error handling revision: {e}", flush=True)
+            say(
+                text=f"Sorry, I couldn't generate a revision: {str(e)}",
+                thread_ts=thread_ts,
+            )
+
+    def _build_revision_messages(self, session: dict, new_request: str) -> List[Dict]:
+        """Build conversation history for revision request."""
+        messages = []
+
+        # Add original draft
+        drafts = session.get("drafts", [])
+        if drafts:
+            messages.append({
+                "role": "assistant",
+                "content": f"Here's the original draft:\n\n{drafts[0]['content']}"
+            })
+
+        # Add revision history
+        for draft in drafts[1:]:
+            if draft.get("revision_request"):
+                messages.append({
+                    "role": "user",
+                    "content": draft["revision_request"]
+                })
+            messages.append({
+                "role": "assistant",
+                "content": draft["content"]
+            })
+
+        # Add new request
+        messages.append({
+            "role": "user",
+            "content": new_request
+        })
+
+        return messages
+
+    async def _handle_approval(self, say, thread_ts: str, channel: str = None):
+        """Handle when user approves a draft."""
+        session = self.draft_sessions.get(thread_ts)
+        if not session or session["status"] != "iterating":
+            return
+
+        session["status"] = "approved"
+        session["approved_at"] = datetime.now(timezone.utc)
+
+        # Only extract learnings if there were revisions
+        if len(session["drafts"]) > 1:
+            try:
+                learnings = await self.generator.extract_learnings(
+                    pillar=ContentPillar(session["pillar"]),
+                    drafts=session["drafts"],
+                )
+
+                if learnings:
+                    session["pending_learnings"] = learnings
+                    session["status"] = "learnings_pending"
+
+                    pillar_name = session["pillar"].replace("_", " ")
+                    learnings_text = "\n".join(f"• {l}" for l in learnings)
+
+                    say(
+                        text=f"✅ Final version locked!\n\nBased on your edits, I noticed these preferences:\n{learnings_text}\n\nShould I remember these for future {pillar_name} posts?\nReply: *yes* / *yes, except [x]* / *no*",
+                        thread_ts=thread_ts,
+                    )
+                    return
+            except Exception as e:
+                print(f"[SLACKBOT] Error extracting learnings: {e}", flush=True)
+
+        # No learnings to extract
+        say(text="✅ Final version locked!", thread_ts=thread_ts)
+        session["status"] = "complete"
+
+    async def _handle_learning_confirmation(self, say, thread_ts: str, response: str):
+        """Handle user's response to learning confirmation."""
+        session = self.draft_sessions.get(thread_ts)
+        if not session or session["status"] != "learnings_pending":
+            return
+
+        response_lower = response.lower().strip()
+        learnings = session.get("pending_learnings", [])
+
+        if response_lower == "no" or response_lower.startswith("no"):
+            say(text="👍 No problem, preferences not saved.", thread_ts=thread_ts)
+            session["status"] = "complete"
+            return
+
+        # Handle "yes, except X"
+        if "except" in response_lower and learnings:
+            # Filter out mentioned exceptions
+            filtered = []
+            for learning in learnings:
+                learning_lower = learning.lower()
+                # Check if this learning is mentioned in the exception
+                if not any(word in response_lower for word in learning_lower.split()[:3]):
+                    filtered.append(learning)
+            learnings = filtered
+
+        # Store learnings as feedback
+        if learnings:
+            pillar = ContentPillar(session["pillar"])
+            final_content = session["drafts"][-1]["content"]
+
+            for learning in learnings:
+                try:
+                    await self.feedback_service.create(
+                        pillar=pillar,
+                        original_content=final_content,
+                        feedback_text=f"Style preference: {learning}",
+                        slack_thread_ts=thread_ts,
+                    )
+                except Exception as e:
+                    print(f"[SLACKBOT] Error storing learning: {e}", flush=True)
+
+            pillar_name = session["pillar"].replace("_", " ")
+            saved_text = "\n".join(f"• {l}" for l in learnings)
+            say(
+                text=f"📚 Got it! I'll remember for future {pillar_name} posts:\n{saved_text}",
+                thread_ts=thread_ts,
+            )
+        else:
+            say(text="👍 No preferences saved.", thread_ts=thread_ts)
+
+        session["status"] = "complete"
+
+    async def _cleanup_old_sessions(self):
+        """Remove draft sessions older than 24 hours."""
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        expired = [
+            ts for ts, session in self.draft_sessions.items()
+            if session.get("created_at", datetime.now(timezone.utc)) < cutoff
+        ]
+        for ts in expired:
+            del self.draft_sessions[ts]
 
     def _show_help(self, say):
         """Show help message."""
