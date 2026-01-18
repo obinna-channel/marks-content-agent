@@ -112,20 +112,7 @@ class RelevanceScorer:
         except json.JSONDecodeError as e:
             print(f"Error parsing relevance response: {e}")
             print(f"Raw response was: {response_text[:500] if response_text else 'EMPTY'}")
-            return {
-                "score": 0.5,
-                "type": RelevanceType.SKIP.value,
-                "reasoning": "Failed to parse response",
-                "suggested_content": None,
-            }
-        except Exception as e:
-            print(f"Error scoring tweet: {e}", flush=True)
-            return {
-                "score": 0.0,
-                "type": RelevanceType.SKIP.value,
-                "reasoning": f"Error: {str(e)}",
-                "suggested_content": None,
-            }
+            raise ValueError(f"Failed to parse relevance response: {e}")
 
     async def score_article(
         self,
@@ -198,20 +185,7 @@ class RelevanceScorer:
 
         except json.JSONDecodeError as e:
             print(f"Error parsing article relevance response: {e}")
-            return {
-                "score": 0.5,
-                "type": RelevanceType.SKIP.value,
-                "reasoning": "Failed to parse response",
-                "suggested_content": None,
-            }
-        except Exception as e:
-            print(f"Error scoring article: {e}")
-            return {
-                "score": 0.0,
-                "type": RelevanceType.SKIP.value,
-                "reasoning": f"Error: {str(e)}",
-                "suggested_content": None,
-            }
+            raise ValueError(f"Failed to parse article relevance response: {e}")
 
     async def generate_news_reaction(
         self,
