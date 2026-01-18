@@ -82,7 +82,7 @@ class RelevanceScorer:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model="claude-haiku-3-5-20241022",
+                model="claude-3-5-haiku-20241022",
                 max_tokens=1024,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
@@ -161,7 +161,7 @@ class RelevanceScorer:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model="claude-haiku-3-5-20241022",
+                model="claude-3-5-haiku-20241022",
                 max_tokens=1024,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
@@ -226,7 +226,7 @@ class RelevanceScorer:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-opus-4-20250514",
                 max_tokens=512,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
@@ -273,7 +273,7 @@ class RelevanceScorer:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-opus-4-20250514",
                 max_tokens=256,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
