@@ -38,9 +38,9 @@ class TwitterMonitor:
     def _format_time_ago(self, timestamp: datetime) -> str:
         """Format a timestamp as 'X min ago'."""
         now = datetime.now(timezone.utc)
-        # Handle timezone-aware timestamps
-        if timestamp.tzinfo is not None:
-            timestamp = timestamp.replace(tzinfo=None)
+        # Ensure timestamp is timezone-aware (assume UTC if naive)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
         diff = now - timestamp
 
         minutes = int(diff.total_seconds() / 60)

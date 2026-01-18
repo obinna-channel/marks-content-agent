@@ -101,6 +101,7 @@ class RelevanceScorer:
 
         except json.JSONDecodeError as e:
             print(f"Error parsing relevance response: {e}")
+            print(f"Raw response was: {response_text[:500] if response_text else 'EMPTY'}")
             return {
                 "score": 0.5,
                 "type": RelevanceType.SKIP.value,
@@ -108,7 +109,7 @@ class RelevanceScorer:
                 "suggested_content": None,
             }
         except Exception as e:
-            print(f"Error scoring tweet: {e}")
+            print(f"Error scoring tweet: {e}", flush=True)
             return {
                 "score": 0.0,
                 "type": RelevanceType.SKIP.value,
