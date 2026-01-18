@@ -15,8 +15,9 @@ print("[SLACKBOT] Importing local modules...", flush=True)
 from src.config import get_settings
 from src.services.account_service import AccountService
 from src.services.voice_sampler import get_voice_sampler
-from src.models.content import MonitoredAccountCreate, AccountCategory
+from src.models.content import MonitoredAccountCreate, AccountCategory, ContentPillar
 from src.integrations.twitter import get_twitter_client
+from src.agent.generator import get_content_generator
 
 print("[SLACKBOT] All imports complete", flush=True)
 
@@ -31,6 +32,7 @@ class SlackBot:
         self.account_service = AccountService()
         self.voice_sampler = get_voice_sampler()
         self.twitter = get_twitter_client()
+        self.generator = get_content_generator()
 
         # Register message handlers
         self._register_handlers()
@@ -91,6 +93,14 @@ class SlackBot:
         def handle_refresh_voice(message, say):
             """Handle !refresh-voice"""
             asyncio.run(self._refresh_voice_samples(say))
+
+        @self.app.message(re.compile(r"^!generate\s+(\w+)(?:\s+(.+))?", re.IGNORECASE))
+        def handle_generate(message, say, context):
+            """Handle !generate pillar [topic]"""
+            matches = context["matches"]
+            pillar = matches[0].lower()
+            topic = matches[1] if len(matches) > 1 and matches[1] else None
+            asyncio.run(self._generate_post(say, pillar, topic))
 
         @self.app.message(re.compile(r"^!help", re.IGNORECASE))
         def handle_help(message, say):
@@ -304,9 +314,52 @@ class SlackBot:
         except Exception as e:
             say(f"❌ Error: {str(e)}")
 
+    async def _generate_post(self, say, pillar: str, topic: str = None):
+        """Generate a post for a given pillar."""
+        try:
+            # Validate pillar
+            valid_pillars = ["market_commentary", "education", "product", "social_proof"]
+            if pillar not in valid_pillars:
+                say(f"❌ Invalid pillar. Use: {', '.join(valid_pillars)}")
+                return
+
+            say(f"✨ Generating {pillar.replace('_', ' ')} post...")
+
+            # Generate the post
+            content_pillar = ContentPillar(pillar)
+            result = await self.generator.generate_single_post(
+                pillar=content_pillar,
+                topic_hint=topic,
+            )
+
+            # Format and send the result
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": f"📝 Generated {pillar.replace('_', ' ').title()} Post"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Topic:* {result.get('topic', 'N/A')}"}
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"```{result.get('content', 'No content generated')}```"}
+                },
+            ]
+
+            say(blocks=blocks, text=f"Generated post: {result.get('topic', '')}")
+
+        except Exception as e:
+            say(f"❌ Error generating post: {str(e)}")
+
     def _show_help(self, say):
         """Show help message."""
         help_text = """*Content Agent Commands:*
+
+*Content Generation:*
+• `!generate pillar [topic]` — Generate a post for a pillar
 
 *Voice References* (accounts to mimic style):
 • `!add-voice @handle [pillars]` — Add voice reference
@@ -325,11 +378,14 @@ class SlackBot:
 
 *Examples:*
 ```
+!generate market_commentary
+!generate education how perpetuals work
 !add-voice @KobeissiLetter market_commentary
 !add-voice @productaccount product, education
 !tag-voice @KobeissiLetter market_commentary, social_proof
 !add-monitor @cenbank_ng nigeria 1
 !list-monitors nigeria
+!remove @noisyaccount
 ```"""
         say(help_text)
 
