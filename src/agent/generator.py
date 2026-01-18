@@ -174,7 +174,7 @@ class ContentGenerator:
         try:
             client = self._get_client()
             response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-opus-4-20250514",
                 max_tokens=4096,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
@@ -268,7 +268,7 @@ Return JSON: {{"topic": "...", "angle": "...", "content": "..."}}"""
         try:
             client = self._get_client()
             response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-opus-4-20250514",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
