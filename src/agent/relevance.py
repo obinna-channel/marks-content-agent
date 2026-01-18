@@ -89,7 +89,17 @@ class RelevanceScorer:
             )
 
             # Parse JSON response
-            response_text = response.content[0].text
+            response_text = response.content[0].text.strip()
+
+            # Handle markdown code blocks
+            if response_text.startswith("```"):
+                # Remove opening ```json or ```
+                response_text = response_text.split("\n", 1)[1] if "\n" in response_text else response_text[3:]
+                # Remove closing ```
+                if "```" in response_text:
+                    response_text = response_text.rsplit("```", 1)[0]
+                response_text = response_text.strip()
+
             result = json.loads(response_text)
 
             return {
@@ -168,7 +178,15 @@ class RelevanceScorer:
                 messages=[{"role": "user", "content": user_prompt}],
             )
 
-            response_text = response.content[0].text
+            response_text = response.content[0].text.strip()
+
+            # Handle markdown code blocks
+            if response_text.startswith("```"):
+                response_text = response_text.split("\n", 1)[1] if "\n" in response_text else response_text[3:]
+                if "```" in response_text:
+                    response_text = response_text.rsplit("```", 1)[0]
+                response_text = response_text.strip()
+
             result = json.loads(response_text)
 
             return {
@@ -179,7 +197,7 @@ class RelevanceScorer:
             }
 
         except json.JSONDecodeError as e:
-            print(f"Error parsing relevance response: {e}")
+            print(f"Error parsing article relevance response: {e}")
             return {
                 "score": 0.5,
                 "type": RelevanceType.SKIP.value,
