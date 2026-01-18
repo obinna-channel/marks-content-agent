@@ -1,7 +1,7 @@
 """RSS feed monitor for polling news sources."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from email.utils import parsedate_to_datetime
 
@@ -55,7 +55,7 @@ class RSSMonitor:
         if not timestamp:
             return "recently"
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Handle timezone-aware datetimes
         if timestamp.tzinfo is not None:
             timestamp = timestamp.replace(tzinfo=None)

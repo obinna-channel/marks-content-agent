@@ -3,7 +3,7 @@
 import asyncio
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from src.config import get_settings
@@ -26,40 +26,40 @@ class ContentAgentWorker:
 
     async def twitter_loop(self):
         """Continuously poll Twitter accounts."""
-        print(f"[{datetime.utcnow().isoformat()}] Starting Twitter monitor (interval: {self.settings.twitter_poll_interval}s)")
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Starting Twitter monitor (interval: {self.settings.twitter_poll_interval}s)")
 
         while self._running:
             try:
-                print(f"[{datetime.utcnow().isoformat()}] Running Twitter check cycle...")
+                print(f"[{datetime.now(timezone.utc).isoformat()}] Running Twitter check cycle...")
                 summary = await self.twitter_monitor.run_check_cycle(self.relevance_scorer)
                 print(
-                    f"[{datetime.utcnow().isoformat()}] Twitter check complete: "
+                    f"[{datetime.now(timezone.utc).isoformat()}] Twitter check complete: "
                     f"{summary['accounts_checked']} accounts, "
                     f"{summary['tweets_found']} tweets, "
                     f"{summary['notifications_sent']} notifications"
                 )
             except Exception as e:
-                print(f"[{datetime.utcnow().isoformat()}] Twitter loop error: {e}")
+                print(f"[{datetime.now(timezone.utc).isoformat()}] Twitter loop error: {e}")
 
             # Wait for next cycle
             await asyncio.sleep(self.settings.twitter_poll_interval)
 
     async def rss_loop(self):
         """Continuously poll RSS feeds."""
-        print(f"[{datetime.utcnow().isoformat()}] Starting RSS monitor (interval: {self.settings.rss_poll_interval}s)")
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Starting RSS monitor (interval: {self.settings.rss_poll_interval}s)")
 
         while self._running:
             try:
-                print(f"[{datetime.utcnow().isoformat()}] Running RSS check cycle...")
+                print(f"[{datetime.now(timezone.utc).isoformat()}] Running RSS check cycle...")
                 summary = await self.rss_monitor.run_check_cycle()
                 print(
-                    f"[{datetime.utcnow().isoformat()}] RSS check complete: "
+                    f"[{datetime.now(timezone.utc).isoformat()}] RSS check complete: "
                     f"{summary['sources_checked']} sources, "
                     f"{summary['items_found']} items, "
                     f"{summary['notifications_sent']} notifications"
                 )
             except Exception as e:
-                print(f"[{datetime.utcnow().isoformat()}] RSS loop error: {e}")
+                print(f"[{datetime.now(timezone.utc).isoformat()}] RSS loop error: {e}")
 
             # Wait for next cycle
             await asyncio.sleep(self.settings.rss_poll_interval)
@@ -70,7 +70,7 @@ class ContentAgentWorker:
             print("Content Agent is disabled. Set CONTENT_AGENT_ENABLED=true to enable.")
             return
 
-        print(f"[{datetime.utcnow().isoformat()}] Content Agent starting...")
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Content Agent starting...")
         self._running = True
 
         # Start both loops concurrently
@@ -81,11 +81,11 @@ class ContentAgentWorker:
         try:
             await asyncio.gather(self._twitter_task, self._rss_task)
         except asyncio.CancelledError:
-            print(f"[{datetime.utcnow().isoformat()}] Content Agent shutting down...")
+            print(f"[{datetime.now(timezone.utc).isoformat()}] Content Agent shutting down...")
 
     async def stop(self):
         """Stop all monitoring loops gracefully."""
-        print(f"[{datetime.utcnow().isoformat()}] Stopping Content Agent...")
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Stopping Content Agent...")
         self._running = False
 
         # Cancel tasks
@@ -99,7 +99,7 @@ class ContentAgentWorker:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        print(f"[{datetime.utcnow().isoformat()}] Content Agent stopped.")
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Content Agent stopped.")
 
 
 async def run_twitter_only():
@@ -108,7 +108,7 @@ async def run_twitter_only():
     twitter_monitor = TwitterMonitor()
     relevance_scorer = get_relevance_scorer()
 
-    print(f"[{datetime.utcnow().isoformat()}] Running single Twitter check...")
+    print(f"[{datetime.now(timezone.utc).isoformat()}] Running single Twitter check...")
     summary = await twitter_monitor.run_check_cycle(relevance_scorer)
     print(f"Results: {summary}")
 
@@ -117,7 +117,7 @@ async def run_rss_only():
     """Run only the RSS monitor (useful for testing)."""
     rss_monitor = get_rss_monitor()
 
-    print(f"[{datetime.utcnow().isoformat()}] Running single RSS check...")
+    print(f"[{datetime.now(timezone.utc).isoformat()}] Running single RSS check...")
     summary = await rss_monitor.run_check_cycle()
     print(f"Results: {summary}")
 

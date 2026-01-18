@@ -1,6 +1,6 @@
 """Service for managing monitored tweets."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -94,7 +94,7 @@ class TweetService:
         account_id: Optional[UUID] = None,
     ) -> List[MonitoredTweet]:
         """Get recently fetched tweets."""
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         query = (
             self.db.table(self.table)
@@ -154,7 +154,7 @@ class TweetService:
 
     async def cleanup_old(self, days: int = 30) -> int:
         """Delete tweets older than specified days."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         result = (
             self.db.table(self.table)

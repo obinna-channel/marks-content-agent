@@ -1,7 +1,7 @@
 """HTTP client for Marks API to fetch price data."""
 
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -126,7 +126,7 @@ class MarksAPIClient:
             Dict with weekly summary data
         """
         summary = {
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "pairs": {},
         }
 

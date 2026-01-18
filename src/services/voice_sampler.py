@@ -1,6 +1,6 @@
 """Service for fetching and managing voice samples from reference accounts."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -189,7 +189,7 @@ class VoiceSamplerService:
 
     async def cleanup_old_samples(self, days: int = 90) -> int:
         """Delete samples older than specified days."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         result = (
             self.db.table(self.table)

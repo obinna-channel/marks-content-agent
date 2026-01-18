@@ -1,6 +1,6 @@
 """Service for managing RSS sources and items."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -76,7 +76,7 @@ class RSSService:
                 next_check = source.last_checked_at + timedelta(
                     minutes=source.poll_interval_minutes
                 )
-                if datetime.utcnow() >= next_check:
+                if datetime.now(timezone.utc) >= next_check:
                     due_sources.append(source)
 
         return due_sources
@@ -85,7 +85,7 @@ class RSSService:
         """Update the last checked timestamp for a source."""
         result = (
             self.db.table(self.sources_table)
-            .update({"last_checked_at": datetime.utcnow().isoformat()})
+            .update({"last_checked_at": datetime.now(timezone.utc).isoformat()})
             .eq("id", str(source_id))
             .execute()
         )
@@ -142,7 +142,7 @@ class RSSService:
         source_id: Optional[UUID] = None,
     ) -> List[RSSItem]:
         """Get recently fetched RSS items."""
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         query = (
             self.db.table(self.items_table)
@@ -198,7 +198,7 @@ class RSSService:
 
     async def cleanup_old_items(self, days: int = 30) -> int:
         """Delete RSS items older than specified days."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         result = (
             self.db.table(self.items_table)

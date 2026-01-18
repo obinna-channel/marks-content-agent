@@ -1,6 +1,6 @@
 """Service for managing content history."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -53,7 +53,7 @@ class HistoryService:
         limit: int = 100,
     ) -> List[ContentHistory]:
         """Get recent content history."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         query = (
             self.db.table(self.table)
@@ -88,7 +88,7 @@ class HistoryService:
     ) -> ContentHistory:
         """Mark content as posted."""
         update_data = {
-            "posted_at": datetime.utcnow().isoformat(),
+            "posted_at": datetime.now(timezone.utc).isoformat(),
         }
         if twitter_post_id:
             update_data["twitter_post_id"] = twitter_post_id

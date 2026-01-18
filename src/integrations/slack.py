@@ -1,7 +1,7 @@
 """Slack client for sending notifications."""
 
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -36,7 +36,7 @@ class SlackClient:
 
     def _format_time_ago(self, timestamp: datetime) -> str:
         """Format a timestamp as 'X min ago' or 'X hours ago'."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         diff = now - timestamp
 
         minutes = int(diff.total_seconds() / 60)
@@ -288,7 +288,7 @@ class SlackClient:
         Returns:
             True if successful
         """
-        today = datetime.utcnow().strftime("%b %d")
+        today = datetime.now(timezone.utc).strftime("%b %d")
 
         pending_text = "\n".join(f"• {item}" for item in pending_items) if pending_items else "None"
 

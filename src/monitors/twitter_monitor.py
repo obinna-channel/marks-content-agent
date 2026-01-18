@@ -1,7 +1,7 @@
 """Twitter monitor for polling accounts and detecting relevant tweets."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from src.config import get_settings
@@ -37,7 +37,7 @@ class TwitterMonitor:
 
     def _format_time_ago(self, timestamp: datetime) -> str:
         """Format a timestamp as 'X min ago'."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Handle timezone-aware timestamps
         if timestamp.tzinfo is not None:
             timestamp = timestamp.replace(tzinfo=None)

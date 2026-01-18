@@ -1,7 +1,7 @@
 """Content generation using Claude API."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -167,7 +167,7 @@ class ContentGenerator:
             WeeklyBatch with 7 content items
         """
         # Calculate week dates
-        today = datetime.utcnow()
+        today = datetime.now(timezone.utc)
         # Find next Monday
         days_until_monday = (7 - today.weekday()) % 7
         if days_until_monday == 0:

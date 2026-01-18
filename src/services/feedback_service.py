@@ -1,6 +1,6 @@
 """Service for managing voice feedback."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -42,7 +42,7 @@ class FeedbackService:
         limit: int = 10,
     ) -> List[dict]:
         """Get recent feedback, optionally filtered by pillar."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         query = (
             self.db.table(self.table)

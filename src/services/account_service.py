@@ -1,6 +1,6 @@
 """Service for managing monitored Twitter accounts."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
@@ -91,7 +91,7 @@ class AccountService:
     ) -> MonitoredAccount:
         """Update the last checked timestamp for an account."""
         update_data = {
-            "last_checked_at": datetime.utcnow().isoformat(),
+            "last_checked_at": datetime.now(timezone.utc).isoformat(),
         }
         if last_tweet_id:
             update_data["last_tweet_id"] = last_tweet_id
