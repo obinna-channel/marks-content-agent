@@ -3,4 +3,4 @@ builder = "dockerfile"
 
 [deploy]
 restartPolicyType = "always"
-healthcheckPath = "/"
+numReplicas = 1
