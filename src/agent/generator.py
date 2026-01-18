@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import anthropic
@@ -48,6 +49,17 @@ class ContentGenerator:
         if self._client is None:
             self._client = anthropic.Anthropic(api_key=self.api_key)
         return self._client
+
+    def _get_marks_context(self) -> str:
+        """Load Marks Exchange context from file."""
+        try:
+            context_path = Path(__file__).parent.parent.parent / "context" / "marks_context.md"
+            if context_path.exists():
+                return context_path.read_text()
+            return ""
+        except Exception as e:
+            print(f"Error loading marks context: {e}")
+            return ""
 
     async def _get_market_data_string(self) -> str:
         """Fetch and format market data for prompt."""
@@ -257,6 +269,7 @@ class ContentGenerator:
         Returns:
             Dict with topic and content
         """
+        marks_context = self._get_marks_context()
         market_data = await self._get_market_data_string()
         avoid_topics = await self._get_avoid_topics_string()
         # Get voice samples filtered by this pillar
@@ -274,6 +287,8 @@ class ContentGenerator:
             voice_section += f"\n{voice_feedback}\n"
 
         prompt = f"""Generate a single {pillar.value.replace('_', ' ')} post for Marks Exchange.
+
+{marks_context}
 
 {market_data}
 {voice_section}
