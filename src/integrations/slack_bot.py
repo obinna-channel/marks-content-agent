@@ -697,14 +697,6 @@ class SlackBot:
         if not session:
             return
 
-        # Check revision limit
-        if len(session["drafts"]) >= 10:
-            say(
-                text="You've reached the revision limit (10). Consider starting fresh with a new generation.",
-                thread_ts=thread_ts,
-            )
-            return
-
         try:
             # Build conversation history for revision
             messages = self._build_revision_messages(session, request)
