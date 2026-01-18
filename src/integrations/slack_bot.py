@@ -16,6 +16,7 @@ from src.config import get_settings
 from src.services.account_service import AccountService
 from src.services.voice_sampler import get_voice_sampler
 from src.services.feedback_service import get_feedback_service
+from src.services.intent_parser import get_intent_parser
 from src.models.content import MonitoredAccountCreate, AccountCategory, ContentPillar
 from src.integrations.twitter import get_twitter_client
 from src.agent.generator import get_content_generator
@@ -33,11 +34,15 @@ class SlackBot:
         self.account_service = AccountService()
         self.voice_sampler = get_voice_sampler()
         self.feedback_service = get_feedback_service()
+        self.intent_parser = get_intent_parser()
         self.twitter = get_twitter_client()
         self.generator = get_content_generator()
 
         # Track generated posts for feedback (message_ts -> {pillar, content})
         self.generated_posts = {}
+
+        # Track pending confirmations for ambiguous intents (user_id -> {intent, entities})
+        self.pending_confirmations = {}
 
         # Register message handlers
         self._register_handlers()
@@ -113,22 +118,211 @@ class SlackBot:
             self._show_help(say)
 
         @self.app.event("message")
-        def handle_thread_reply(event, say):
-            """Handle thread replies for feedback on generated posts."""
-            # Only process thread replies (messages with thread_ts that differs from ts)
+        def handle_message_event(event, say):
+            """Handle all messages - thread replies, natural language, etc."""
+            # Skip bot messages
+            if event.get("bot_id") or event.get("subtype"):
+                return
+
             thread_ts = event.get("thread_ts")
             message_ts = event.get("ts")
             text = event.get("text", "")
+            user_id = event.get("user", "")
 
-            # Skip if not a thread reply or if it's a command
-            if not thread_ts or thread_ts == message_ts:
+            # Skip empty messages
+            if not text or not text.strip():
                 return
+
+            # Skip commands (handled by regex handlers above)
             if text.startswith("!"):
                 return
 
-            # Check if this is a reply to a generated post
-            if thread_ts in self.generated_posts:
-                asyncio.run(self._store_feedback(say, thread_ts, text))
+            # Handle thread replies (feedback on generated posts)
+            if thread_ts and thread_ts != message_ts:
+                if thread_ts in self.generated_posts:
+                    asyncio.run(self._store_feedback(say, thread_ts, text))
+                return
+
+            # Handle natural language messages (not in thread, not a command)
+            asyncio.run(self._handle_natural_language(say, text, user_id))
+
+    async def _handle_natural_language(self, say, text: str, user_id: str):
+        """Parse and handle natural language messages."""
+        try:
+            # Check if user is responding to a pending confirmation
+            if user_id in self.pending_confirmations:
+                await self._handle_confirmation_response(say, text, user_id)
+                return
+
+            # Parse the intent
+            result = await self.intent_parser.parse(text)
+
+            # If clarification is needed, ask and store pending state
+            if result.clarification_needed:
+                say(result.clarification_needed)
+                self.pending_confirmations[user_id] = {
+                    "intent": result.intent,
+                    "entities": result.entities,
+                    "awaiting": "clarification",
+                }
+                return
+
+            # If confidence is too low, suggest using !help
+            if result.confidence < 0.5:
+                # Don't respond to every random message - only if it seems bot-directed
+                if any(word in text.lower() for word in ["bot", "help", "generate", "voice", "monitor", "add", "list", "create", "make", "write"]):
+                    say("I'm not sure what you mean. Try `!help` to see available commands, or just ask me naturally like:\n• \"generate a market commentary post\"\n• \"add kobeissi as a voice\"\n• \"what voices do we have?\"")
+                return
+
+            # Execute the intent
+            await self._execute_intent(say, result.intent, result.entities, user_id)
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error handling natural language: {e}", flush=True)
+
+    async def _handle_confirmation_response(self, say, text: str, user_id: str):
+        """Handle user's response to a clarification or confirmation request."""
+        pending = self.pending_confirmations.pop(user_id, None)
+        if not pending:
+            return
+
+        text_lower = text.lower().strip()
+
+        # Check for cancellation
+        if text_lower in ["cancel", "nevermind", "never mind", "no", "nope", "stop"]:
+            say("Okay, cancelled.")
+            return
+
+        # If awaiting clarification, re-parse with the new info
+        if pending.get("awaiting") == "clarification":
+            # Try to extract the missing info from the response
+            # For now, just re-parse the new message and merge
+            new_result = await self.intent_parser.parse(text)
+
+            # Merge entities - prefer new values but keep old ones if new is empty
+            merged_entities = {**pending["entities"]}
+            for key, value in new_result.entities.items():
+                if value:  # Only update if new value is non-empty
+                    merged_entities[key] = value
+
+            # If still missing required info, ask again
+            if new_result.clarification_needed:
+                say(new_result.clarification_needed)
+                self.pending_confirmations[user_id] = {
+                    "intent": pending["intent"],
+                    "entities": merged_entities,
+                    "awaiting": "clarification",
+                }
+                return
+
+            # Execute with merged entities
+            await self._execute_intent(say, pending["intent"], merged_entities, user_id)
+
+    async def _execute_intent(self, say, intent: str, entities: dict, user_id: str):
+        """Execute a parsed intent."""
+        try:
+            if intent == "add_voice":
+                handle = entities.get("handle")
+                pillars = entities.get("pillars", [])
+                if not handle:
+                    say("Which Twitter account should I add as a voice reference?")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": entities,
+                        "awaiting": "clarification",
+                    }
+                    return
+                await self._add_voice_reference(say, handle, pillars)
+
+            elif intent == "add_monitor":
+                handle = entities.get("handle")
+                category = entities.get("category")
+                priority = entities.get("priority") or 2
+                if not handle:
+                    say("Which Twitter account should I monitor?")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": entities,
+                        "awaiting": "clarification",
+                    }
+                    return
+                if not category:
+                    say(f"What category is @{handle}? Options: nigeria, argentina, colombia, global_macro, crypto_defi, reply_target")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": {**entities, "handle": handle},
+                        "awaiting": "clarification",
+                    }
+                    return
+                await self._add_monitored_account(say, handle, category, priority)
+
+            elif intent == "remove_account":
+                handle = entities.get("handle")
+                if not handle:
+                    say("Which account should I remove?")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": entities,
+                        "awaiting": "clarification",
+                    }
+                    return
+                await self._remove_account(say, handle)
+
+            elif intent == "list_voices":
+                await self._list_voice_references(say)
+
+            elif intent == "list_monitors":
+                category = entities.get("category")
+                await self._list_monitored_accounts(say, category)
+
+            elif intent == "tag_voice":
+                handle = entities.get("handle")
+                pillars = entities.get("pillars", [])
+                if not handle:
+                    say("Which voice account should I update?")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": entities,
+                        "awaiting": "clarification",
+                    }
+                    return
+                if not pillars:
+                    say(f"What pillars should @{handle} cover? Options: market_commentary, education, product, social_proof")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": {**entities, "handle": handle},
+                        "awaiting": "clarification",
+                    }
+                    return
+                await self._tag_voice_reference(say, handle, pillars)
+
+            elif intent == "refresh_voices":
+                await self._refresh_voice_samples(say)
+
+            elif intent == "generate_post":
+                pillars = entities.get("pillars", [])
+                topic = entities.get("topic")
+                if not pillars:
+                    say("What type of post? Options: market_commentary, education, product, social_proof")
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": entities,
+                        "awaiting": "clarification",
+                    }
+                    return
+                pillar = pillars[0]  # Use first pillar
+                await self._generate_post(say, pillar, topic)
+
+            elif intent == "help":
+                self._show_help(say)
+
+            else:
+                # Unknown intent - don't respond to avoid being noisy
+                pass
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error executing intent {intent}: {e}", flush=True)
+            say(f"Sorry, something went wrong: {str(e)}")
 
     async def _add_voice_reference(self, say, handle: str, pillars: list):
         """Add a voice reference account with optional pillar tags."""
@@ -417,7 +611,18 @@ class SlackBot:
 
     def _show_help(self, say):
         """Show help message."""
-        help_text = """*Content Agent Commands:*
+        help_text = """*Content Agent*
+
+You can talk to me naturally or use commands!
+
+*Natural Language Examples:*
+• "generate a market commentary post about the naira"
+• "add kobeissi as a voice for market commentary"
+• "what voices do we have?"
+• "show me the nigeria monitors"
+• "refresh the voice samples"
+
+*Commands* (for power users):
 
 *Content Generation:*
 • `!generate pillar [topic]` — Generate a post for a pillar
@@ -437,7 +642,7 @@ class SlackBot:
 *Categories:* nigeria, argentina, colombia, global_macro, crypto_defi, reply_target
 *Priority:* 1 (high), 2 (medium), 3 (low)
 
-*Examples:*
+*Command Examples:*
 ```
 !generate market_commentary
 !generate education how perpetuals work
