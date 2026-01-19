@@ -50,7 +50,7 @@ class SlackClient:
         days = int(hours / 24)
         return f"{days} days ago"
 
-    async def send_message(self, text: str, blocks: Optional[List[dict]] = None) -> bool:
+    async def send_message(self, text: str, blocks: Optional[List[dict]] = None) -> Optional[str]:
         """
         Send a message to the configured channel.
 
@@ -59,21 +59,21 @@ class SlackClient:
             blocks: Rich message blocks
 
         Returns:
-            True if successful
+            Message timestamp (ts) if successful, None otherwise
         """
         try:
             client = self._get_client()
-            client.chat_postMessage(
+            response = client.chat_postMessage(
                 channel=self.channel_id,
                 text=text,
                 blocks=blocks,
             )
-            return True
+            return response.get("ts")
         except SlackApiError as e:
             print(f"Slack API error: {e.response['error']}")
-            return False
+            return None
 
-    async def send_news_alert(self, alert: SlackNewsAlert) -> bool:
+    async def send_news_alert(self, alert: SlackNewsAlert) -> Optional[str]:
         """
         Send a news alert to Slack.
 
@@ -81,7 +81,7 @@ class SlackClient:
             alert: News alert data
 
         Returns:
-            True if successful
+            Message timestamp (ts) if successful, None otherwise
         """
         # Build emoji based on source type
         emoji = "🗞️" if alert.source_type == "twitter" else "📰"
@@ -155,7 +155,7 @@ class SlackClient:
             blocks=blocks,
         )
 
-    async def send_reply_opportunity(self, opportunity: SlackReplyOpportunity) -> bool:
+    async def send_reply_opportunity(self, opportunity: SlackReplyOpportunity) -> Optional[str]:
         """
         Send a reply opportunity alert to Slack.
 
@@ -163,7 +163,7 @@ class SlackClient:
             opportunity: Reply opportunity data
 
         Returns:
-            True if successful
+            Message timestamp (ts) if successful, None otherwise
         """
         # Build metadata line
         meta_parts = [f"Followers: {opportunity.follower_count:,}"]
@@ -262,10 +262,11 @@ class SlackClient:
                 }
             })
 
-        return await self.send_message(
+        result = await self.send_message(
             text=f"📅 Weekly Content Batch ({date_range})",
             blocks=blocks,
         )
+        return result is not None
 
     async def send_daily_digest(
         self,
@@ -327,10 +328,11 @@ class SlackClient:
             },
         ]
 
-        return await self.send_message(
+        result = await self.send_message(
             text=f"📊 Daily Digest - {today}",
             blocks=blocks,
         )
+        return result is not None
 
 
 # Singleton instance

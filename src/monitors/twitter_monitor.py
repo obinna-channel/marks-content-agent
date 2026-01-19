@@ -181,6 +181,7 @@ class TwitterMonitor:
 
         # Send appropriate Slack notification
         time_ago = self._format_time_ago(tweet.tweet_created_at) if tweet.tweet_created_at else "just now"
+        message_ts = None
 
         if score_result["type"] == "reply_opportunity":
             opportunity = SlackReplyOpportunity(
@@ -192,7 +193,7 @@ class TwitterMonitor:
                 time_ago=time_ago,
                 suggested_reply=score_result.get("suggested_content") or "No suggestion generated",
             )
-            await self.slack.send_reply_opportunity(opportunity)
+            message_ts = await self.slack.send_reply_opportunity(opportunity)
         else:
             tweet_link = f"https://twitter.com/{account.twitter_handle}/status/{tweet.tweet_id}"
             alert = SlackNewsAlert(
@@ -206,10 +207,10 @@ class TwitterMonitor:
                 suggested_post=score_result.get("suggested_content") or "No suggestion generated",
                 urgency="high" if account.priority == 1 else "normal",
             )
-            await self.slack.send_news_alert(alert)
+            message_ts = await self.slack.send_news_alert(alert)
 
-        # Mark as notified
-        await self.tweet_service.mark_notified(tweet.id)
+        # Mark as notified and store Slack message_ts for thread replies
+        await self.tweet_service.mark_notified(tweet.id, slack_message_ts=message_ts)
         return True
 
     async def run_check_cycle(self, relevance_scorer) -> dict:

@@ -125,6 +125,7 @@ class MonitoredTweet(MonitoredTweetBase):
     relevance_type: Optional[RelevanceType] = None
     suggested_content: Optional[str] = None
     slack_notified: bool = False
+    slack_message_ts: Optional[str] = None  # For linking Slack thread replies
     actioned: bool = False
 
     class Config:

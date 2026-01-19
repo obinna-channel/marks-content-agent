@@ -132,15 +132,35 @@ class TweetService:
         )
         return MonitoredTweet.model_validate(result.data[0])
 
-    async def mark_notified(self, tweet_id: UUID) -> MonitoredTweet:
-        """Mark a tweet as notified to Slack."""
+    async def mark_notified(
+        self,
+        tweet_id: UUID,
+        slack_message_ts: Optional[str] = None,
+    ) -> MonitoredTweet:
+        """Mark a tweet as notified to Slack and store message timestamp."""
+        update_data = {"slack_notified": True}
+        if slack_message_ts:
+            update_data["slack_message_ts"] = slack_message_ts
+
         result = (
             self.db.table(self.table)
-            .update({"slack_notified": True})
+            .update(update_data)
             .eq("id", str(tweet_id))
             .execute()
         )
         return MonitoredTweet.model_validate(result.data[0])
+
+    async def get_by_slack_message_ts(self, slack_ts: str) -> Optional[MonitoredTweet]:
+        """Get tweet by Slack message timestamp (for thread replies)."""
+        result = (
+            self.db.table(self.table)
+            .select("*")
+            .eq("slack_message_ts", slack_ts)
+            .execute()
+        )
+        if result.data:
+            return MonitoredTweet.model_validate(result.data[0])
+        return None
 
     async def mark_actioned(self, tweet_id: UUID) -> MonitoredTweet:
         """Mark a tweet as actioned (user posted about it)."""

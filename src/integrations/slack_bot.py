@@ -15,6 +15,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 print("[SLACKBOT] Importing local modules...", flush=True)
 from src.config import get_settings
 from src.services.account_service import AccountService
+from src.services.tweet_service import TweetService
 from src.services.voice_sampler import get_voice_sampler
 from src.services.feedback_service import get_feedback_service
 from src.services.intent_parser import get_intent_parser
@@ -33,6 +34,7 @@ class SlackBot:
         self.app = App(token=settings.slack_bot_token)
         self.app_token = settings.slack_app_token
         self.account_service = AccountService()
+        self.tweet_service = TweetService()
         self.voice_sampler = get_voice_sampler()
         self.feedback_service = get_feedback_service()
         self.intent_parser = get_intent_parser()
@@ -146,8 +148,14 @@ class SlackBot:
                 # Check if this is a draft session (iterative refinement)
                 if thread_ts in self.draft_sessions:
                     asyncio.run(self._handle_draft_reply(say, thread_ts, text, user_id))
+                    return
+                # Check if this is a suggested tweet thread (from Twitter monitor)
+                suggested_tweet = asyncio.run(self._check_suggested_tweet_thread(thread_ts))
+                if suggested_tweet:
+                    asyncio.run(self._handle_draft_reply(say, thread_ts, text, user_id))
+                    return
                 # Legacy: feedback on old-style generated posts
-                elif thread_ts in self.generated_posts:
+                if thread_ts in self.generated_posts:
                     asyncio.run(self._store_feedback(say, thread_ts, text))
                 return
 
@@ -661,6 +669,43 @@ class SlackBot:
         except Exception as e:
             print(f"[SLACKBOT] Error storing feedback: {e}", flush=True)
 
+    async def _check_suggested_tweet_thread(self, thread_ts: str) -> bool:
+        """Check if thread_ts is a suggested tweet and create draft session if so."""
+        try:
+            tweet = await self.tweet_service.get_by_slack_message_ts(thread_ts)
+            if not tweet or not tweet.suggested_content:
+                return False
+
+            # Determine pillar based on relevance type
+            pillar = "market_commentary"  # Default
+            if tweet.relevance_type:
+                if tweet.relevance_type.value == "reply_opportunity":
+                    pillar = "social_proof"  # Replies are social proof
+
+            # Create draft session on-the-fly
+            self.draft_sessions[thread_ts] = {
+                "pillar": pillar,
+                "topic": f"Reply to @{tweet.account_handle}",
+                "source_tweet_id": str(tweet.id),
+                "source_tweet_content": tweet.content,
+                "source_tweet_handle": tweet.account_handle,
+                "drafts": [
+                    {
+                        "version": 0,
+                        "content": tweet.suggested_content,
+                        "revision_request": None,
+                        "message_ts": thread_ts,
+                    }
+                ],
+                "status": "iterating",
+                "created_at": datetime.now(timezone.utc),
+            }
+            return True
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error checking suggested tweet: {e}", flush=True)
+            return False
+
     async def _handle_draft_reply(self, say, thread_ts: str, text: str, user_id: str):
         """Handle replies in a draft session thread."""
         session = self.draft_sessions.get(thread_ts)
@@ -742,6 +787,14 @@ class SlackBot:
     def _build_revision_messages(self, session: dict, new_request: str) -> List[Dict]:
         """Build conversation history for revision request."""
         messages = []
+
+        # If this is a reply to a tweet, include context about the original tweet
+        if session.get("source_tweet_content"):
+            handle = session.get("source_tweet_handle", "unknown")
+            messages.append({
+                "role": "user",
+                "content": f"I'm writing a reply to this tweet from @{handle}:\n\n\"{session['source_tweet_content']}\"\n\nPlease help me refine my reply."
+            })
 
         # Add original draft
         drafts = session.get("drafts", [])

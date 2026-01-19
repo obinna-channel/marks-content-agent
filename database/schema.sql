@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS monitored_tweets (
     relevance_type TEXT,  -- 'news', 'reply_opportunity', 'skip'
     suggested_content TEXT,  -- Generated response
     slack_notified BOOLEAN DEFAULT false,
+    slack_message_ts TEXT,  -- Slack message timestamp for thread replies
     actioned BOOLEAN DEFAULT false  -- Did user post about this?
 );
 
@@ -79,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_monitored_tweets_tweet_id ON monitored_tweets(twe
 CREATE INDEX IF NOT EXISTS idx_monitored_tweets_account ON monitored_tweets(account_id);
 CREATE INDEX IF NOT EXISTS idx_monitored_tweets_fetched ON monitored_tweets(fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_monitored_tweets_unnotified ON monitored_tweets(slack_notified) WHERE slack_notified = false;
+CREATE INDEX IF NOT EXISTS idx_monitored_tweets_slack_ts ON monitored_tweets(slack_message_ts);
 
 
 -- -----------------------------------------------------------------------------
