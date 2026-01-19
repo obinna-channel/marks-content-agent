@@ -375,6 +375,71 @@ Return ONLY the revised content text, no explanation or formatting."""
             print(f"Error revising content: {e}")
             raise
 
+    async def revise_with_voice(
+        self,
+        pillar: ContentPillar,
+        current_content: str,
+        voice_samples: List[str],
+        voice_handle: str,
+        additional_request: str = "",
+    ) -> str:
+        """
+        Revise content to match a specific voice/style.
+
+        Args:
+            pillar: The content pillar
+            current_content: The current draft to revise
+            voice_samples: List of sample tweets from the voice reference
+            voice_handle: Handle of the voice reference account
+            additional_request: Any additional revision instructions
+
+        Returns:
+            Revised content string matching the voice
+        """
+        marks_context = self._get_marks_context()
+
+        # Format voice samples
+        samples_text = "\n\n".join([f"Example {i+1}: \"{s}\"" for i, s in enumerate(voice_samples[:5])])
+
+        system_prompt = f"""You are revising social media content for Marks Exchange to match a specific voice/style.
+
+{marks_context}
+
+## Voice Reference: @{voice_handle}
+
+Study these example tweets and match their style, tone, sentence structure, and personality:
+
+{samples_text}
+
+## Guidelines
+
+- Match the voice's characteristic style (punchy, analytical, casual, etc.)
+- Preserve the core message about Marks Exchange
+- Keep it appropriate for Twitter/X (concise, engaging)
+- Don't copy exact phrases, but capture the essence of how they write
+- If the voice uses specific patterns (e.g., threads, bullet points, rhetorical questions), consider using them
+
+Return ONLY the revised content text, no explanation."""
+
+        user_message = f"Rewrite this content in @{voice_handle}'s voice:\n\n{current_content}"
+        if additional_request:
+            user_message += f"\n\nAdditional request: {additional_request}"
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model="claude-opus-4-5-20251101",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+
+            return response.content[0].text.strip()
+
+        except Exception as e:
+            print(f"Error revising with voice: {e}")
+            raise
+
     async def extract_learnings(
         self,
         pillar: ContentPillar,

@@ -888,6 +888,132 @@ Provide a helpful, concise answer. If you don't have enough information to answe
                 thread_ts=thread_ts,
             )
 
+    async def _detect_voice_request(self, text: str) -> Optional[str]:
+        """Detect if revision request is asking for voice matching, return voice hint."""
+        import anthropic
+
+        try:
+            client = anthropic.Anthropic()
+
+            prompt = f"""Analyze this revision request for a social media post.
+
+Request: "{text}"
+
+Is the user asking to rewrite in someone's voice/style? Look for phrases like:
+- "sound like X", "write like X", "in X's style"
+- "more like X", "make it like X"
+- "use X's voice", "match X's tone"
+- References to specific accounts or people
+
+If YES, extract who they're referring to (the voice/style reference).
+If NO, they just want a regular revision.
+
+Return ONLY valid JSON:
+{{"is_voice_request": true/false, "voice_hint": "extracted name/handle or null"}}
+
+Examples:
+- "make it shorter" -> {{"is_voice_request": false, "voice_hint": null}}
+- "sound more like kobeissi" -> {{"is_voice_request": true, "voice_hint": "kobeissi"}}
+- "write this in the style of @KobeissiLetter" -> {{"is_voice_request": true, "voice_hint": "KobeissiLetter"}}
+- "more punchy like that market guy" -> {{"is_voice_request": true, "voice_hint": "market guy"}}"""
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=100,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            response_text = response.content[0].text.strip()
+
+            # Handle markdown code blocks
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
+            import json
+            result = json.loads(response_text)
+
+            if result.get("is_voice_request") and result.get("voice_hint"):
+                return result["voice_hint"]
+            return None
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error detecting voice request: {e}", flush=True)
+            return None
+
+    async def _find_voice_reference(self, hint: str) -> Optional[dict]:
+        """Fuzzy search for a voice reference by hint. Returns account and samples."""
+        try:
+            # Get all voice references
+            voice_accounts = await self.account_service.get_voice_references()
+
+            if not voice_accounts:
+                return None
+
+            hint_lower = hint.lower().strip().lstrip("@")
+
+            # Try exact handle match first
+            for acc in voice_accounts:
+                if acc.twitter_handle.lower() == hint_lower:
+                    samples = await self.voice_sampler.get_samples_for_account(acc.id)
+                    return {"account": acc, "samples": samples}
+
+            # Try partial handle match
+            for acc in voice_accounts:
+                if hint_lower in acc.twitter_handle.lower():
+                    samples = await self.voice_sampler.get_samples_for_account(acc.id)
+                    return {"account": acc, "samples": samples}
+
+            # Try matching by pillar keywords
+            pillar_keywords = {
+                "market": "market_commentary",
+                "commentary": "market_commentary",
+                "education": "education",
+                "educational": "education",
+                "product": "product",
+                "social": "social_proof",
+                "proof": "social_proof",
+            }
+
+            for keyword, pillar in pillar_keywords.items():
+                if keyword in hint_lower:
+                    for acc in voice_accounts:
+                        if acc.voice_pillars and pillar in acc.voice_pillars:
+                            samples = await self.voice_sampler.get_samples_for_account(acc.id)
+                            return {"account": acc, "samples": samples}
+
+            # If still no match, use Claude to find best match
+            account_list = ", ".join([f"@{a.twitter_handle}" for a in voice_accounts])
+            import anthropic
+            client = anthropic.Anthropic()
+
+            prompt = f"""The user wants to match a voice style. They said: "{hint}"
+
+Available voice reference accounts: {account_list}
+
+Which account best matches what they're looking for? Return ONLY the handle (without @), or "none" if no good match."""
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=50,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            matched_handle = response.content[0].text.strip().lower().lstrip("@")
+
+            for acc in voice_accounts:
+                if acc.twitter_handle.lower() == matched_handle:
+                    samples = await self.voice_sampler.get_samples_for_account(acc.id)
+                    return {"account": acc, "samples": samples}
+
+            return None
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error finding voice reference: {e}", flush=True)
+            return None
+
     def _is_approval_signal(self, text: str) -> bool:
         """Check if message signals approval."""
         text_lower = text.lower().strip()
@@ -914,7 +1040,62 @@ Provide a helpful, concise answer. If you don't have enough information to answe
             return
 
         try:
-            # Build conversation history for revision
+            # Check if this is a voice matching request
+            voice_hint = await self._detect_voice_request(request)
+
+            if voice_hint:
+                # Find the voice reference
+                voice_match = await self._find_voice_reference(voice_hint)
+
+                if voice_match:
+                    account = voice_match["account"]
+                    samples = voice_match["samples"]
+
+                    # Get sample content texts
+                    sample_texts = [s.content for s in samples] if samples else []
+
+                    if sample_texts:
+                        current_content = session["drafts"][-1]["content"]
+
+                        # Revise with voice
+                        revised_content = await self.generator.revise_with_voice(
+                            pillar=ContentPillar(session["pillar"]),
+                            current_content=current_content,
+                            voice_samples=sample_texts,
+                            voice_handle=account.twitter_handle,
+                        )
+
+                        version = len(session["drafts"])
+
+                        # Post the revision with voice attribution
+                        response = say(
+                            text=f"📝 *Revision {version}* (styled like @{account.twitter_handle})\n```{revised_content}```\n\n_Reply to refine more, react ✅ when done_",
+                            thread_ts=thread_ts,
+                        )
+
+                        # Store new draft
+                        session["drafts"].append({
+                            "version": version,
+                            "content": revised_content,
+                            "revision_request": request,
+                            "voice_reference": account.twitter_handle,
+                            "message_ts": response.get("ts") if response else None,
+                        })
+                        return
+                    else:
+                        say(
+                            text=f"Found @{account.twitter_handle} but no voice samples yet. Try `!refresh-voice` first.",
+                            thread_ts=thread_ts,
+                        )
+                        return
+                else:
+                    say(
+                        text=f"Couldn't find a voice reference matching \"{voice_hint}\". Use `!list-voice` to see available voices.",
+                        thread_ts=thread_ts,
+                    )
+                    return
+
+            # Regular revision (not voice matching)
             messages = self._build_revision_messages(session, request)
 
             # Get revision from Claude
