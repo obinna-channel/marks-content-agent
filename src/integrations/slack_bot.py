@@ -50,6 +50,9 @@ class SlackBot:
         # Track pending confirmations for ambiguous intents (user_id -> {intent, entities})
         self.pending_confirmations = {}
 
+        # Track conversation history per user for context (user_id -> list of messages)
+        self.conversation_history = {}
+
         # Register message handlers
         self._register_handlers()
 
@@ -189,20 +192,56 @@ class SlackBot:
                             asyncio.run(self._handle_approval(say, thread_ts, channel))
                             return
 
+    def _add_to_history(self, user_id: str, role: str, content: str):
+        """Add a message to conversation history."""
+        if user_id not in self.conversation_history:
+            self.conversation_history[user_id] = []
+
+        self.conversation_history[user_id].append({
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now(timezone.utc),
+        })
+
+        # Keep only last 10 messages per user
+        if len(self.conversation_history[user_id]) > 10:
+            self.conversation_history[user_id] = self.conversation_history[user_id][-10:]
+
+    def _get_history(self, user_id: str) -> List[Dict[str, str]]:
+        """Get recent conversation history for a user."""
+        if user_id not in self.conversation_history:
+            return []
+
+        # Filter to messages from last 10 minutes for relevance
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+        recent = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in self.conversation_history[user_id]
+            if msg.get("timestamp", datetime.now(timezone.utc)) > cutoff
+        ]
+        return recent
+
     async def _handle_natural_language(self, say, text: str, user_id: str):
         """Parse and handle natural language messages."""
         try:
+            # Add user message to history
+            self._add_to_history(user_id, "user", text)
+
             # Check if user is responding to a pending confirmation
             if user_id in self.pending_confirmations:
                 await self._handle_confirmation_response(say, text, user_id)
                 return
 
-            # Parse the intent
-            result = await self.intent_parser.parse(text)
+            # Get conversation history for context
+            history = self._get_history(user_id)
+
+            # Parse the intent with conversation context
+            result = await self.intent_parser.parse(text, conversation_history=history)
 
             # If clarification is needed, ask and store pending state
             if result.clarification_needed:
                 say(result.clarification_needed)
+                self._add_to_history(user_id, "assistant", result.clarification_needed)
                 self.pending_confirmations[user_id] = {
                     "intent": result.intent,
                     "entities": result.entities,
@@ -214,7 +253,9 @@ class SlackBot:
             if result.confidence < 0.5:
                 # Don't respond to every random message - only if it seems bot-directed
                 if any(word in text.lower() for word in ["bot", "help", "generate", "voice", "monitor", "add", "list", "create", "make", "write"]):
-                    say("I'm not sure what you mean. Try `!help` to see available commands, or just ask me naturally like:\n• \"generate a market commentary post\"\n• \"add kobeissi as a voice\"\n• \"what voices do we have?\"")
+                    response = "I'm not sure what you mean. Try `!help` to see available commands, or just ask me naturally like:\n• \"generate a market commentary post\"\n• \"add kobeissi as a voice\"\n• \"what voices do we have?\""
+                    say(response)
+                    self._add_to_history(user_id, "assistant", response)
                 return
 
             # Execute the intent
@@ -268,7 +309,9 @@ class SlackBot:
                 handle = entities.get("handle")
                 pillars = entities.get("pillars", [])
                 if not handle:
-                    say("Which Twitter account should I add as a voice reference?")
+                    msg = "Which Twitter account should I add as a voice reference?"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": entities,
@@ -276,13 +319,18 @@ class SlackBot:
                     }
                     return
                 await self._add_voice_reference(say, handle, pillars)
+                # Track action for context
+                pillar_str = ", ".join(pillars) if pillars else "all pillars"
+                self._add_to_history(user_id, "assistant", f"Added @{handle} as voice reference for {pillar_str}")
 
             elif intent == "add_monitor":
                 handle = entities.get("handle")
                 category = entities.get("category")
                 priority = entities.get("priority") or 2
                 if not handle:
-                    say("Which Twitter account should I monitor?")
+                    msg = "Which Twitter account should I monitor?"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": entities,
@@ -290,7 +338,9 @@ class SlackBot:
                     }
                     return
                 if not category:
-                    say(f"What category is @{handle}? Options: nigeria, argentina, colombia, global_macro, crypto_defi, reply_target")
+                    msg = f"What category is @{handle}? Options: nigeria, argentina, colombia, global_macro, crypto_defi, reply_target"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": {**entities, "handle": handle},
@@ -298,11 +348,15 @@ class SlackBot:
                     }
                     return
                 await self._add_monitored_account(say, handle, category, priority)
+                # Track action for context
+                self._add_to_history(user_id, "assistant", f"Added @{handle} to monitor for {category}")
 
             elif intent == "remove_account":
                 handle = entities.get("handle")
                 if not handle:
-                    say("Which account should I remove?")
+                    msg = "Which account should I remove?"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": entities,
@@ -310,19 +364,24 @@ class SlackBot:
                     }
                     return
                 await self._remove_account(say, handle)
+                self._add_to_history(user_id, "assistant", f"Removed @{handle}")
 
             elif intent == "list_voices":
                 await self._list_voice_references(say)
+                self._add_to_history(user_id, "assistant", "Listed voice references")
 
             elif intent == "list_monitors":
                 category = entities.get("category")
                 await self._list_monitored_accounts(say, category)
+                self._add_to_history(user_id, "assistant", f"Listed monitors{' for ' + category if category else ''}")
 
             elif intent == "tag_voice":
                 handle = entities.get("handle")
                 pillars = entities.get("pillars", [])
                 if not handle:
-                    say("Which voice account should I update?")
+                    msg = "Which voice account should I update?"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": entities,
@@ -330,7 +389,9 @@ class SlackBot:
                     }
                     return
                 if not pillars:
-                    say(f"What pillars should @{handle} cover? Options: market_commentary, education, product, social_proof")
+                    msg = f"What pillars should @{handle} cover? Options: market_commentary, education, product, social_proof"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": {**entities, "handle": handle},
@@ -338,15 +399,19 @@ class SlackBot:
                     }
                     return
                 await self._tag_voice_reference(say, handle, pillars)
+                self._add_to_history(user_id, "assistant", f"Updated @{handle} pillars to {', '.join(pillars)}")
 
             elif intent == "refresh_voices":
                 await self._refresh_voice_samples(say)
+                self._add_to_history(user_id, "assistant", "Refreshed voice samples")
 
             elif intent == "generate_post":
                 pillars = entities.get("pillars", [])
                 topic = entities.get("topic")
                 if not pillars:
-                    say("What type of post? Options: market_commentary, education, product, social_proof")
+                    msg = "What type of post? Options: market_commentary, education, product, social_proof"
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
                     self.pending_confirmations[user_id] = {
                         "intent": intent,
                         "entities": entities,
@@ -355,9 +420,11 @@ class SlackBot:
                     return
                 pillar = pillars[0]  # Use first pillar
                 await self._generate_post(say, pillar, topic)
+                self._add_to_history(user_id, "assistant", f"Generated {pillar} post")
 
             elif intent == "help":
                 self._show_help(say)
+                self._add_to_history(user_id, "assistant", "Showed help")
 
             else:
                 # Unknown intent - don't respond to avoid being noisy

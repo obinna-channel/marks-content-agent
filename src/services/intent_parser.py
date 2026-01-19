@@ -52,6 +52,12 @@ class IntentParser:
         """Get the system prompt for intent parsing."""
         return """You are parsing Slack messages for a content management bot. Extract the user's intent and entities.
 
+IMPORTANT: You may receive conversation history. Use it to understand context:
+- "this one too @handle" means repeat the previous action with the new handle
+- "same for @handle" means apply the same action/category as before
+- "also monitor @handle" means add_monitor with the same category as the previous add_monitor
+- If the user provides just a handle or category, infer intent from recent context
+
 Available intents:
 - add_voice: Add a Twitter account as a voice reference (to mimic their writing style)
 - add_monitor: Add a Twitter account to monitor for news
@@ -81,6 +87,7 @@ For pillars:
 For categories:
 - "nigeria" or "nigerian" or "NGN" or "naira" -> "nigeria"
 - "argentina" or "argentine" or "ARS" or "peso" -> "argentina"
+- "colombia" or "colombian" or "COP" -> "colombia"
 - "global" or "macro" -> "global_macro"
 - "crypto" or "defi" -> "crypto_defi"
 
@@ -103,14 +110,25 @@ Examples:
 - "generate an education post about funding rates" -> generate_post, pillars: ["education"], topic: "funding rates"
 - "what voices do we have?" -> list_voices
 - "monitor central bank of nigeria, high priority" -> add_monitor, handle needs clarification (ask for Twitter handle)
-- "hello" or "thanks" -> unknown (friendly but not actionable)"""
+- "hello" or "thanks" -> unknown (friendly but not actionable)
 
-    async def parse(self, message: str) -> ParsedIntent:
+Contextual examples (when conversation history is provided):
+- Previous: "add @FinanzasArgy to monitor for argentina", Current: "this one too @perfilcom" -> add_monitor, handle: "perfilcom", category: "argentina"
+- Previous: "monitor @CBNgov for nigeria", Current: "@vaborzi too" -> add_monitor, handle: "vaborzi", category: "nigeria"
+- Previous: "add @someaccount as voice", Current: "also add @another" -> add_voice, handle: "another\""""
+
+    async def parse(
+        self,
+        message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> ParsedIntent:
         """
         Parse a natural language message into a structured intent.
 
         Args:
             message: The user's message
+            conversation_history: Optional list of recent messages for context
+                Each dict has 'role' ('user' or 'assistant') and 'content'
 
         Returns:
             ParsedIntent with intent, confidence, entities, and optional clarification
@@ -125,11 +143,23 @@ Examples:
 
         try:
             client = self._get_client()
+
+            # Build message with conversation context
+            if conversation_history:
+                context_lines = ["Recent conversation:"]
+                for msg in conversation_history[-6:]:  # Last 6 messages max
+                    role = "User" if msg["role"] == "user" else "Bot"
+                    context_lines.append(f"{role}: {msg['content']}")
+                context_lines.append(f"\nCurrent message to parse: {message}")
+                full_message = "\n".join(context_lines)
+            else:
+                full_message = message
+
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=512,
                 system=self._get_system_prompt(),
-                messages=[{"role": "user", "content": message}],
+                messages=[{"role": "user", "content": full_message}],
             )
 
             response_text = response.content[0].text.strip()
