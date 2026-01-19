@@ -1348,12 +1348,14 @@ Which account best matches what they're looking for? Return ONLY the handle (wit
 
             # Upload image to Slack
             from slack_sdk import WebClient
-            client = WebClient(token=get_settings().slack_bot_token)
+            settings = get_settings()
+            client = WebClient(token=settings.slack_bot_token)
 
             upload_response = client.files_upload_v2(
                 file=image_bytes,
                 filename=f"marks_image_{session_id[:8]}.png",
                 initial_comment=f"*Generated Image*\n_Prompt: {description}_\n\nReply to refine, react :white_check_mark: when done.",
+                channel=settings.slack_channel_id,
             )
 
             # Get the message_ts from the upload
