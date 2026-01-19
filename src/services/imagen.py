@@ -11,9 +11,9 @@ from src.config import get_settings
 
 
 class ImagenClient:
-    """Client for generating images with Imagen 3 via Gemini API."""
+    """Client for generating images with Imagen 4 via Gemini API."""
 
-    MODEL = "imagen-3.0-generate-002"
+    MODEL = "imagen-4.0-generate-001"
 
     def __init__(self, api_key: Optional[str] = None):
         settings = get_settings()
