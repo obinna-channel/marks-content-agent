@@ -280,8 +280,9 @@ class SlackBot:
         # If awaiting clarification, re-parse with the new info
         if pending.get("awaiting") == "clarification":
             # Try to extract the missing info from the response
-            # For now, just re-parse the new message and merge
-            new_result = await self.intent_parser.parse(text)
+            # Pass conversation history for context
+            history = self._get_history(user_id)
+            new_result = await self.intent_parser.parse(text, conversation_history=history)
 
             # Merge entities - prefer new values but keep old ones if new is empty
             merged_entities = {**pending["entities"]}
