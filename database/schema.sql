@@ -135,15 +135,21 @@ CREATE INDEX IF NOT EXISTS idx_rss_items_fetched ON rss_items(fetched_at DESC);
 CREATE TABLE IF NOT EXISTS voice_feedback (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content_id UUID REFERENCES content_history(id) ON DELETE CASCADE,
+    pillar TEXT,  -- 'market_commentary', 'education', 'product', 'social_proof'
     original_content TEXT NOT NULL,
-    edited_content TEXT,  -- NULL if not edited
+    final_content TEXT,  -- Last draft after revisions
+    edited_content TEXT,  -- NULL if not edited (legacy)
     reaction TEXT,  -- 'thumbs_up', 'thumbs_down', NULL
     feedback_text TEXT,  -- Free-form feedback from Slack reply
+    learnings JSONB,  -- Array of extracted style preferences
+    slack_thread_ts TEXT,  -- Reference to Slack thread
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Index
+-- Indexes
 CREATE INDEX IF NOT EXISTS idx_voice_feedback_content ON voice_feedback(content_id);
+CREATE INDEX IF NOT EXISTS idx_voice_feedback_pillar ON voice_feedback(pillar);
+CREATE INDEX IF NOT EXISTS idx_voice_feedback_created ON voice_feedback(created_at DESC);
 
 
 -- -----------------------------------------------------------------------------

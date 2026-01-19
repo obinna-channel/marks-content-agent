@@ -832,28 +832,30 @@ class SlackBot:
                     filtered.append(learning)
             learnings = filtered
 
-        # Store learnings as feedback
+        # Store learnings as feedback (one record with all learnings)
         if learnings:
             pillar = ContentPillar(session["pillar"])
+            original_content = session["drafts"][0]["content"]
             final_content = session["drafts"][-1]["content"]
 
-            for learning in learnings:
-                try:
-                    await self.feedback_service.create(
-                        pillar=pillar,
-                        original_content=final_content,
-                        feedback_text=f"Style preference: {learning}",
-                        slack_thread_ts=thread_ts,
-                    )
-                except Exception as e:
-                    print(f"[SLACKBOT] Error storing learning: {e}", flush=True)
+            try:
+                await self.feedback_service.create(
+                    pillar=pillar,
+                    original_content=original_content,
+                    final_content=final_content,
+                    learnings=learnings,
+                    slack_thread_ts=thread_ts,
+                )
 
-            pillar_name = session["pillar"].replace("_", " ")
-            saved_text = "\n".join(f"• {l}" for l in learnings)
-            say(
-                text=f"📚 Got it! I'll remember for future {pillar_name} posts:\n{saved_text}",
-                thread_ts=thread_ts,
-            )
+                pillar_name = session["pillar"].replace("_", " ")
+                saved_text = "\n".join(f"• {l}" for l in learnings)
+                say(
+                    text=f"📚 Got it! I'll remember for future {pillar_name} posts:\n{saved_text}",
+                    thread_ts=thread_ts,
+                )
+            except Exception as e:
+                print(f"[SLACKBOT] Error storing learnings: {e}", flush=True)
+                say(text="⚠️ Couldn't save preferences, but your content is ready!", thread_ts=thread_ts)
         else:
             say(text="👍 No preferences saved.", thread_ts=thread_ts)
 

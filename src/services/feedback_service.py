@@ -1,5 +1,6 @@
 """Service for managing voice feedback."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from uuid import UUID
@@ -21,16 +22,33 @@ class FeedbackService:
         self,
         pillar: ContentPillar,
         original_content: str,
-        feedback_text: str,
+        feedback_text: Optional[str] = None,
         slack_thread_ts: Optional[str] = None,
+        final_content: Optional[str] = None,
+        learnings: Optional[List[str]] = None,
     ) -> dict:
-        """Create a new feedback record."""
+        """Create a new feedback record.
+
+        Args:
+            pillar: Content pillar this feedback applies to
+            original_content: First draft content
+            feedback_text: Direct feedback text (for simple feedback)
+            slack_thread_ts: Reference to Slack thread
+            final_content: Final draft after revisions
+            learnings: List of extracted style preferences
+        """
         data = {
             "pillar": pillar.value,
             "original_content": original_content,
-            "feedback_text": feedback_text,
             "slack_thread_ts": slack_thread_ts,
         }
+
+        if feedback_text:
+            data["feedback_text"] = feedback_text
+        if final_content:
+            data["final_content"] = final_content
+        if learnings:
+            data["learnings"] = json.dumps(learnings)
 
         result = self.db.table(self.table).insert(data).execute()
         return result.data[0]
@@ -69,13 +87,32 @@ class FeedbackService:
         if not feedback_items:
             return ""
 
-        lines = ["## Recent Feedback on Generated Content\n"]
-        lines.append("Use this feedback to improve your content generation:\n")
+        lines = ["## Style Preferences (learned from feedback)\n"]
+        lines.append("Apply these preferences to your content:\n")
 
         for item in feedback_items:
             pillar_name = item.get("pillar", "general").replace("_", " ").title()
-            feedback = item.get("feedback_text", "")
-            lines.append(f"- **{pillar_name}**: {feedback}")
+
+            # Handle learnings array (new format)
+            learnings = item.get("learnings")
+            if learnings:
+                # Parse JSON if it's a string
+                if isinstance(learnings, str):
+                    try:
+                        learnings = json.loads(learnings)
+                    except json.JSONDecodeError:
+                        learnings = []
+
+                for learning in learnings:
+                    lines.append(f"- **{pillar_name}**: {learning}")
+
+            # Handle direct feedback_text (legacy/simple format)
+            elif item.get("feedback_text"):
+                lines.append(f"- **{pillar_name}**: {item['feedback_text']}")
+
+        # Return empty if only header was added
+        if len(lines) <= 2:
+            return ""
 
         return "\n".join(lines)
 
