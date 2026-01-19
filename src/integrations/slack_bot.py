@@ -715,9 +715,19 @@ class SlackBot:
         try:
             # Route based on session status
             if session["status"] == "iterating":
+                # Quick check for obvious approval signals first
                 if self._is_approval_signal(text):
                     await self._handle_approval(say, thread_ts)
-                else:
+                    return
+
+                # Classify intent using Claude for more nuanced understanding
+                intent = await self._classify_draft_reply_intent(text, session)
+
+                if intent == "approval":
+                    await self._handle_approval(say, thread_ts)
+                elif intent == "question":
+                    await self._handle_context_question(say, thread_ts, text, session)
+                else:  # "revision"
                     await self._handle_revision_request(say, thread_ts, text)
 
             elif session["status"] == "learnings_pending":
@@ -725,6 +735,91 @@ class SlackBot:
 
         except Exception as e:
             print(f"[SLACKBOT] Error handling draft reply: {e}", flush=True)
+
+    async def _classify_draft_reply_intent(self, text: str, session: dict) -> str:
+        """Classify the intent of a draft thread reply using Claude."""
+        import anthropic
+
+        try:
+            client = anthropic.Anthropic()
+
+            prompt = f"""Classify this message in a content drafting thread. The user is reviewing a suggested social media post.
+
+Message: "{text}"
+
+Context: This is a reply to a suggested {'tweet reply' if session.get('source_tweet_content') else 'post'}.
+
+Classify as exactly one of:
+- "approval" - User is approving/accepting the draft (e.g., "looks good", "perfect", "use this")
+- "question" - User is asking for information/clarification about the source content, context, or what something means (e.g., "what is this about?", "who is this person?", "can you explain the context?")
+- "revision" - User wants to change/edit the draft (e.g., "make it shorter", "add more detail", "change the tone")
+
+Return ONLY one word: approval, question, or revision"""
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=10,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            intent = response.content[0].text.strip().lower()
+            if intent in ["approval", "question", "revision"]:
+                return intent
+            return "revision"  # Default to revision if unclear
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error classifying intent: {e}", flush=True)
+            return "revision"  # Default to revision on error
+
+    async def _handle_context_question(self, say, thread_ts: str, question: str, session: dict):
+        """Answer a question about the source content/context."""
+        import anthropic
+
+        try:
+            # Build context about what we're replying to
+            context_parts = []
+
+            if session.get("source_tweet_content"):
+                handle = session.get("source_tweet_handle", "unknown")
+                context_parts.append(f"Source tweet from @{handle}:\n\"{session['source_tweet_content']}\"")
+
+            if session.get("topic"):
+                context_parts.append(f"Topic: {session['topic']}")
+
+            current_draft = session["drafts"][-1]["content"]
+            context_parts.append(f"Current draft:\n\"{current_draft}\"")
+
+            context = "\n\n".join(context_parts)
+
+            client = anthropic.Anthropic()
+
+            prompt = f"""The user is drafting a social media response and has a question. Answer their question based on the context provided.
+
+{context}
+
+User's question: {question}
+
+Provide a helpful, concise answer. If you don't have enough information to answer, say so."""
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            answer = response.content[0].text.strip()
+
+            say(
+                text=f"{answer}\n\n_Reply with revision requests or ✅ when ready to finalize._",
+                thread_ts=thread_ts,
+            )
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error answering question: {e}", flush=True)
+            say(
+                text="Sorry, I couldn't process that question. Try rephrasing or continue with revision requests.",
+                thread_ts=thread_ts,
+            )
 
     def _is_approval_signal(self, text: str) -> bool:
         """Check if message signals approval."""
