@@ -41,8 +41,12 @@ class Settings(BaseSettings):
     # Relevance threshold (0-1)
     relevance_threshold: float = Field(default=0.7, env="RELEVANCE_THRESHOLD")
 
+    # Google Gemini API (for Imagen 3 image generation)
+    gemini_api_key: Optional[str] = Field(default=None, env="GEMINI_API_KEY")
+
     # Feature flags
     content_agent_enabled: bool = Field(default=True, env="CONTENT_AGENT_ENABLED")
+    image_generation_enabled: bool = Field(default=False, env="IMAGE_GENERATION_ENABLED")
 
     class Config:
         env_file = ".env"

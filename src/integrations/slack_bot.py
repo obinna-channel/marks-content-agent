@@ -19,6 +19,7 @@ from src.services.tweet_service import TweetService
 from src.services.voice_sampler import get_voice_sampler
 from src.services.feedback_service import get_feedback_service
 from src.services.intent_parser import get_intent_parser
+from src.services.image_service import get_image_service
 from src.models.content import MonitoredAccountCreate, AccountCategory, ContentPillar
 from src.integrations.twitter import get_twitter_client
 from src.agent.generator import get_content_generator
@@ -52,6 +53,10 @@ class SlackBot:
 
         # Track conversation history per user for context (user_id -> list of messages)
         self.conversation_history = {}
+
+        # Track image generation sessions (thread_ts -> session)
+        self.image_sessions = {}
+        self.image_service = get_image_service()
 
         # Register message handlers
         self._register_handlers()
@@ -148,6 +153,10 @@ class SlackBot:
 
             # Handle thread replies
             if thread_ts and thread_ts != message_ts:
+                # Check if this is an image session (iterative refinement)
+                if thread_ts in self.image_sessions:
+                    asyncio.run(self._handle_image_reply(say, thread_ts, text, user_id))
+                    return
                 # Check if this is a draft session (iterative refinement)
                 if thread_ts in self.draft_sessions:
                     asyncio.run(self._handle_draft_reply(say, thread_ts, text, user_id))
@@ -180,6 +189,14 @@ class SlackBot:
 
             if not reacted_ts or not channel:
                 return
+
+            # Check if any image session contains this message
+            for thread_ts, session in self.image_sessions.items():
+                if session.get("status") == "iterating":
+                    # Check if reaction was on the thread or any message in it
+                    if thread_ts == reacted_ts or session.get("last_message_ts") == reacted_ts:
+                        asyncio.run(self._handle_image_approval(say, thread_ts, channel))
+                        return
 
             # Check if any draft session contains this message
             for thread_ts, session in self.draft_sessions.items():
@@ -422,6 +439,31 @@ class SlackBot:
                 pillar = pillars[0]  # Use first pillar
                 await self._generate_post(say, pillar, topic)
                 self._add_to_history(user_id, "assistant", f"Generated {pillar} post")
+
+            elif intent == "generate_image":
+                description = entities.get("description")
+                aspect_ratio = entities.get("aspect_ratio", "1:1")
+                if not description:
+                    msg = "What would you like me to create? Describe the image."
+                    say(msg)
+                    self._add_to_history(user_id, "assistant", msg)
+                    self.pending_confirmations[user_id] = {
+                        "intent": intent,
+                        "entities": entities,
+                        "awaiting": "clarification",
+                    }
+                    return
+                await self._generate_image(say, description, aspect_ratio, user_id)
+                self._add_to_history(user_id, "assistant", f"Generated image: {description}")
+
+            elif intent == "editorial_question":
+                await self._handle_editorial_question(say, user_id)
+                self._add_to_history(user_id, "assistant", "Provided editorial suggestions")
+
+            elif intent == "editorial_feedback":
+                content_idea = entities.get("content_idea", "")
+                await self._handle_editorial_feedback(say, content_idea, user_id)
+                self._add_to_history(user_id, "assistant", "Provided feedback on content idea")
 
             elif intent == "help":
                 self._show_help(say)
@@ -1270,6 +1312,241 @@ Which account best matches what they're looking for? Return ONLY the handle (wit
         for ts in expired:
             del self.draft_sessions[ts]
 
+        # Also cleanup image sessions
+        expired_images = [
+            ts for ts, session in self.image_sessions.items()
+            if session.get("created_at", datetime.now(timezone.utc)) < cutoff
+        ]
+        for ts in expired_images:
+            del self.image_sessions[ts]
+
+    async def _generate_image(self, say, description: str, aspect_ratio: str, user_id: str):
+        """Generate an image based on description."""
+        from src.config import get_settings
+        settings = get_settings()
+
+        if not settings.image_generation_enabled:
+            say("Image generation is not enabled. Set `IMAGE_GENERATION_ENABLED=true` in your environment.")
+            return
+
+        if not settings.gemini_api_key:
+            say("Image generation requires a Gemini API key. Set `GEMINI_API_KEY` in your environment.")
+            return
+
+        try:
+            say(f"Creating your image...")
+
+            # Generate the image
+            result = await self.image_service.generate(
+                prompt=description,
+                aspect_ratio=aspect_ratio,
+            )
+
+            session_id = result["session_id"]
+            image_bytes = result["image_bytes"]
+            image_path = result["image_path"]
+
+            # Upload image to Slack
+            from slack_sdk import WebClient
+            client = WebClient(token=get_settings().slack_bot_token)
+
+            upload_response = client.files_upload_v2(
+                file=image_bytes,
+                filename=f"marks_image_{session_id[:8]}.png",
+                initial_comment=f"*Generated Image*\n_Prompt: {description}_\n\nReply to refine, react :white_check_mark: when done.",
+            )
+
+            # Get the message_ts from the upload
+            if upload_response.get("ok") and upload_response.get("file"):
+                file_info = upload_response["file"]
+                shares = file_info.get("shares", {})
+                # Get the message_ts from public or private shares
+                public_shares = shares.get("public", {})
+                private_shares = shares.get("private", {})
+                all_shares = {**public_shares, **private_shares}
+
+                thread_ts = None
+                for channel_id, share_list in all_shares.items():
+                    if share_list:
+                        thread_ts = share_list[0].get("ts")
+                        break
+
+                if thread_ts:
+                    # Create image session for iteration
+                    self.image_sessions[thread_ts] = {
+                        "session_id": session_id,
+                        "description": description,
+                        "aspect_ratio": aspect_ratio,
+                        "user_id": user_id,
+                        "iterations": 1,
+                        "status": "iterating",
+                        "last_message_ts": thread_ts,
+                        "created_at": datetime.now(timezone.utc),
+                    }
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error generating image: {e}", flush=True)
+            say(f"Sorry, I couldn't generate the image: {str(e)}")
+
+    async def _handle_image_reply(self, say, thread_ts: str, text: str, user_id: str):
+        """Handle replies in an image session thread."""
+        session = self.image_sessions.get(thread_ts)
+        if not session or session["status"] != "iterating":
+            return
+
+        try:
+            # Check for approval signals
+            if self._is_approval_signal(text):
+                await self._handle_image_approval(say, thread_ts)
+                return
+
+            # Otherwise, regenerate with feedback
+            say(text="Regenerating with your feedback...", thread_ts=thread_ts)
+
+            result = await self.image_service.regenerate_with_feedback(
+                session_id=session["session_id"],
+                feedback=text,
+            )
+
+            image_bytes = result["image_bytes"]
+            iteration = result["iteration"]
+
+            # Upload new image to thread
+            from slack_sdk import WebClient
+            from src.config import get_settings
+            client = WebClient(token=get_settings().slack_bot_token)
+
+            # Get channel from the original thread
+            settings = get_settings()
+            channel_id = settings.slack_channel_id
+
+            upload_response = client.files_upload_v2(
+                file=image_bytes,
+                filename=f"marks_image_v{iteration}.png",
+                initial_comment=f"*Revision {iteration}*\n_Feedback: {text}_\n\nReply to refine more, react :white_check_mark: when done.",
+                thread_ts=thread_ts,
+                channel=channel_id,
+            )
+
+            # Update session
+            session["iterations"] = iteration
+            if upload_response.get("ok") and upload_response.get("file"):
+                file_info = upload_response["file"]
+                shares = file_info.get("shares", {})
+                public_shares = shares.get("public", {})
+                private_shares = shares.get("private", {})
+                all_shares = {**public_shares, **private_shares}
+
+                for ch_id, share_list in all_shares.items():
+                    if share_list:
+                        session["last_message_ts"] = share_list[0].get("ts")
+                        break
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error handling image reply: {e}", flush=True)
+            say(text=f"Sorry, I couldn't regenerate: {str(e)}", thread_ts=thread_ts)
+
+    async def _handle_image_approval(self, say, thread_ts: str, channel: str = None):
+        """Handle when user approves an image."""
+        session = self.image_sessions.get(thread_ts)
+        if not session or session["status"] != "iterating":
+            return
+
+        # Finalize the session
+        self.image_service.finalize_session(session["session_id"])
+        session["status"] = "complete"
+
+        iterations = session.get("iterations", 1)
+        say(
+            text=f":white_check_mark: Image finalized! ({iterations} version{'s' if iterations > 1 else ''})",
+            thread_ts=thread_ts,
+        )
+
+    async def _handle_editorial_question(self, say, user_id: str):
+        """Handle editorial questions about content strategy."""
+        import anthropic
+
+        try:
+            # Get recent content history for context
+            recent_topics = await self.generator.variety_manager.get_topics_to_avoid()
+
+            # Get current day for pillar suggestion
+            from datetime import datetime
+            day_name = datetime.now().strftime("%A").lower()
+
+            # Map days to suggested pillars
+            day_pillars = {
+                "monday": "market_commentary",
+                "tuesday": "education",
+                "wednesday": "product",
+                "thursday": "education",
+                "friday": "social_proof",
+                "saturday": "social_proof",
+                "sunday": "market_commentary",
+            }
+            suggested_pillar = day_pillars.get(day_name, "market_commentary")
+
+            client = anthropic.Anthropic()
+
+            prompt = f"""You're a social media strategist for Marks Exchange, a stablecoin FX perpetuals trading platform.
+
+Today is {day_name.title()}. Based on our content calendar, {suggested_pillar.replace('_', ' ')} content works well today.
+
+Recent topics we've covered (avoid repeating): {', '.join(recent_topics[:5]) if recent_topics else 'None recently'}
+
+Content pillars:
+- market_commentary: Commentary on forex/stablecoin markets, CBN news, currency movements
+- education: How perpetuals work, funding rates, hedging strategies
+- product: Marks features, trading pairs, platform updates
+- social_proof: User testimonials, volume milestones, community wins
+
+Suggest 2-3 specific content ideas for today. Be specific about the topic and angle. Keep suggestions concise (1-2 sentences each).
+
+Return in a conversational format, like you're chatting with the social media manager."""
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=400,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            say(response.content[0].text.strip())
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error handling editorial question: {e}", flush=True)
+            say("Sorry, I couldn't generate content suggestions right now.")
+
+    async def _handle_editorial_feedback(self, say, content_idea: str, user_id: str):
+        """Provide feedback on a content idea."""
+        import anthropic
+
+        try:
+            client = anthropic.Anthropic()
+
+            prompt = f"""You're a social media strategist for Marks Exchange, a stablecoin FX perpetuals trading platform.
+
+The user is asking for feedback on this content idea:
+"{content_idea}"
+
+Provide brief, constructive feedback:
+1. Is this on-brand for a fintech trading platform?
+2. Any suggestions to make it more engaging?
+3. Which content pillar does it fit? (market_commentary, education, product, social_proof)
+
+Keep your response conversational and concise (3-4 sentences max)."""
+
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            say(response.content[0].text.strip())
+
+        except Exception as e:
+            print(f"[SLACKBOT] Error handling editorial feedback: {e}", flush=True)
+            say("Sorry, I couldn't provide feedback right now.")
+
     def _show_help(self, say):
         """Show help message."""
         help_text = """*Content Agent*
@@ -1282,6 +1559,9 @@ You can talk to me naturally or use commands!
 • "what voices do we have?"
 • "show me the nigeria monitors"
 • "refresh the voice samples"
+• "create an image showing currency symbols flowing"
+• "what should we post today?"
+• "how does this sound: 'USDT/NGN hits new high...'"
 
 *Commands* (for power users):
 

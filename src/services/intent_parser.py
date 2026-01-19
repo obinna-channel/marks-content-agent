@@ -30,12 +30,16 @@ class IntentParser:
         "tag_voice",
         "refresh_voices",
         "generate_post",
+        "generate_image",
+        "editorial_question",
+        "editorial_feedback",
         "help",
         "unknown",
     ]
 
     VALID_PILLARS = ["market_commentary", "education", "product", "social_proof"]
     VALID_CATEGORIES = ["nigeria", "argentina", "colombia", "global_macro", "crypto_defi", "reply_target"]
+    VALID_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4"]
 
     def __init__(self, api_key: Optional[str] = None):
         settings = get_settings()
@@ -67,6 +71,9 @@ Available intents:
 - tag_voice: Update which pillars a voice applies to
 - refresh_voices: Refresh voice samples from Twitter
 - generate_post: Generate content for a pillar
+- generate_image: Create/generate an image or graphic (visual content creation)
+- editorial_question: User asking for content strategy advice ("what should we post?", "any ideas for today?")
+- editorial_feedback: User asking for feedback on content ideas ("how does this sound?", "is this good?")
 - help: User wants help or doesn't know what the bot can do
 - unknown: Can't determine intent or message is unrelated to bot functions
 
@@ -91,6 +98,12 @@ For categories:
 - "global" or "macro" -> "global_macro"
 - "crypto" or "defi" -> "crypto_defi"
 
+For image generation:
+- "square" or "1:1" -> aspect_ratio: "1:1"
+- "landscape" or "wide" or "16:9" -> aspect_ratio: "16:9"
+- "portrait" or "tall" or "9:16" -> aspect_ratio: "9:16"
+- Default is "1:1" if not specified
+
 Return ONLY valid JSON (no markdown, no explanation):
 {
   "intent": "one of the intents above",
@@ -100,7 +113,10 @@ Return ONLY valid JSON (no markdown, no explanation):
     "pillars": ["pillar1", "pillar2"] or [],
     "category": "category or null",
     "priority": 1-3 or null,
-    "topic": "topic hint or null"
+    "topic": "topic hint or null",
+    "description": "image description or null (for generate_image)",
+    "aspect_ratio": "1:1 or 16:9 or 9:16 or 4:3 or 3:4 (for generate_image)",
+    "content_idea": "user's content idea or null (for editorial_feedback)"
   },
   "clarification_needed": "question to ask user, or null if clear"
 }
@@ -111,6 +127,11 @@ Examples:
 - "what voices do we have?" -> list_voices
 - "monitor central bank of nigeria, high priority" -> add_monitor, handle needs clarification (ask for Twitter handle)
 - "hello" or "thanks" -> unknown (friendly but not actionable)
+- "create an image showing currency symbols flowing" -> generate_image, description: "currency symbols flowing"
+- "make a landscape graphic for the naira update" -> generate_image, description: "naira update", aspect_ratio: "16:9"
+- "what should we post today?" -> editorial_question
+- "any content ideas for this week?" -> editorial_question
+- "how does this sound: 'USDT/NGN hits new high...'" -> editorial_feedback, content_idea: "USDT/NGN hits new high..."
 
 Contextual examples (when conversation history is provided):
 - Previous: "add @FinanzasArgy to monitor for argentina", Current: "this one too @perfilcom" -> add_monitor, handle: "perfilcom", category: "argentina"
@@ -194,6 +215,11 @@ Contextual examples (when conversation history is provided):
             if "category" in entities and entities["category"]:
                 if entities["category"] not in self.VALID_CATEGORIES:
                     entities["category"] = None
+
+            # Normalize aspect_ratio
+            if "aspect_ratio" in entities and entities["aspect_ratio"]:
+                if entities["aspect_ratio"] not in self.VALID_ASPECT_RATIOS:
+                    entities["aspect_ratio"] = "1:1"  # Default to square
 
             return ParsedIntent(
                 intent=intent,
