@@ -96,11 +96,8 @@ BRAND STYLE REQUIREMENTS:
             )
 
             if response.generated_images:
-                # Get the PIL image and convert to bytes
-                pil_image = response.generated_images[0].image
-                buffer = io.BytesIO()
-                pil_image.save(buffer, format="PNG")
-                return buffer.getvalue()
+                # Get image bytes from response
+                return response.generated_images[0].image.image_bytes
 
             return None
 
