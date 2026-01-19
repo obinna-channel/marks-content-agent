@@ -179,6 +179,11 @@ class TwitterMonitor:
         if score_result["score"] < self.settings.relevance_threshold:
             return False
 
+        # Skip if no suggested content - nothing actionable to notify about
+        suggested_content = score_result.get("suggested_content")
+        if not suggested_content or not suggested_content.strip():
+            return False
+
         # Send appropriate Slack notification
         time_ago = self._format_time_ago(tweet.tweet_created_at) if tweet.tweet_created_at else "just now"
         message_ts = None
@@ -191,7 +196,7 @@ class TwitterMonitor:
                 follower_count=account.follower_count or 0,
                 likes=raw.get("likes"),
                 time_ago=time_ago,
-                suggested_reply=score_result.get("suggested_content") or "No suggestion generated",
+                suggested_reply=suggested_content,
             )
             message_ts = await self.slack.send_reply_opportunity(opportunity)
         else:
@@ -204,7 +209,7 @@ class TwitterMonitor:
                 category=account.category,
                 follower_count=account.follower_count,
                 time_ago=time_ago,
-                suggested_post=score_result.get("suggested_content") or "No suggestion generated",
+                suggested_post=suggested_content,
                 urgency="high" if account.priority == 1 else "normal",
             )
             message_ts = await self.slack.send_news_alert(alert)
