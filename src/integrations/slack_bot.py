@@ -819,7 +819,9 @@ Context: This is a reply to a suggested {'tweet reply' if session.get('source_tw
 Classify as exactly one of:
 - "approval" - User is approving/accepting the draft (e.g., "looks good", "perfect", "use this")
 - "question" - User is asking for information/clarification about the source content, context, or what something means (e.g., "what is this about?", "who is this person?", "can you explain the context?")
-- "revision" - User wants to change/edit the draft (e.g., "make it shorter", "add more detail", "change the tone")
+- "revision" - User wants to change/edit the draft, INCLUDING voice/style requests (e.g., "make it shorter", "add more detail", "change the tone", "how would X write this", "write it like X", "in X's voice/style")
+
+IMPORTANT: Requests about writing style or voice (e.g., "how would X write this?", "what would X say?", "make it sound like X") are REVISION requests, not questions.
 
 Return ONLY one word: approval, question, or revision"""
 
