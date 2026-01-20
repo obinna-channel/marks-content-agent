@@ -56,19 +56,23 @@ class FeedbackService:
     async def get_recent_feedback(
         self,
         pillar: Optional[ContentPillar] = None,
-        days: int = 30,
-        limit: int = 10,
+        days: Optional[int] = None,
     ) -> List[dict]:
-        """Get recent feedback, optionally filtered by pillar."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        """Get feedback, optionally filtered by pillar and time window.
 
+        Args:
+            pillar: Optional content pillar to filter by
+            days: Optional time window in days. If None, returns all-time feedback.
+        """
         query = (
             self.db.table(self.table)
             .select("*")
-            .gte("created_at", cutoff.isoformat())
             .order("created_at", desc=True)
-            .limit(limit)
         )
+
+        if days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            query = query.gte("created_at", cutoff.isoformat())
 
         if pillar:
             query = query.eq("pillar", pillar.value)
@@ -79,10 +83,12 @@ class FeedbackService:
     async def get_feedback_for_prompt(
         self,
         pillar: Optional[ContentPillar] = None,
-        limit: int = 5,
     ) -> str:
-        """Get formatted feedback string for inclusion in generation prompts."""
-        feedback_items = await self.get_recent_feedback(pillar=pillar, limit=limit)
+        """Get formatted feedback string for inclusion in generation prompts.
+
+        Fetches all-time feedback to ensure voice consistency.
+        """
+        feedback_items = await self.get_recent_feedback(pillar=pillar, days=None)
 
         if not feedback_items:
             return ""

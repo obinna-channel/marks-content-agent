@@ -15,6 +15,7 @@ from src.models.content import (
 )
 from src.services.account_service import AccountService
 from src.services.tweet_service import TweetService
+from src.services.feedback_service import FeedbackService, get_feedback_service
 from src.integrations.twitter import TwitterClient, get_twitter_client
 from src.integrations.slack import SlackClient, get_slack_client
 
@@ -28,11 +29,13 @@ class TwitterMonitor:
         slack_client: Optional[SlackClient] = None,
         account_service: Optional[AccountService] = None,
         tweet_service: Optional[TweetService] = None,
+        feedback_service: Optional[FeedbackService] = None,
     ):
         self.twitter = twitter_client or get_twitter_client()
         self.slack = slack_client or get_slack_client()
         self.account_service = account_service or AccountService()
         self.tweet_service = tweet_service or TweetService()
+        self.feedback_service = feedback_service or get_feedback_service()
         self.settings = get_settings()
 
     def _format_time_ago(self, timestamp: datetime) -> str:
@@ -179,8 +182,34 @@ class TwitterMonitor:
         if score_result["score"] < self.settings.relevance_threshold:
             return False
 
-        # Skip if no suggested content - nothing actionable to notify about
-        suggested_content = score_result.get("suggested_content")
+        # Get voice feedback for content generation
+        voice_feedback = await self.feedback_service.get_feedback_for_prompt()
+
+        # Generate content with feedback based on type
+        suggested_content = None
+        if score_result["type"] == "reply_opportunity":
+            # Generate reply with voice feedback
+            account_context = f"{account.category.value.replace('_', ' ').title()} account"
+            topic = score_result.get("reasoning", "relevant discussion")
+            suggested_content = await relevance_scorer.generate_reply(
+                account_handle=account.twitter_handle,
+                follower_count=account.follower_count or 0,
+                tweet_content=tweet.content,
+                account_context=account_context,
+                topic=topic,
+                voice_feedback=voice_feedback,
+            )
+        else:
+            # Generate news reaction with voice feedback
+            suggested_content = await relevance_scorer.generate_news_reaction(
+                source=account.twitter_handle,
+                headline=tweet.content[:200] if len(tweet.content) > 200 else tweet.content,
+                summary=tweet.content,
+                market_context=score_result.get("reasoning", ""),
+                voice_feedback=voice_feedback,
+            )
+
+        # Skip if no suggested content generated
         if not suggested_content or not suggested_content.strip():
             return False
 

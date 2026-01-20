@@ -15,6 +15,7 @@ from src.models.content import (
     AccountCategory,
 )
 from src.services.rss_service import RSSService
+from src.services.feedback_service import FeedbackService, get_feedback_service
 from src.integrations.slack import SlackClient, get_slack_client
 from src.agent.relevance import RelevanceScorer, get_relevance_scorer
 
@@ -27,10 +28,12 @@ class RSSMonitor:
         slack_client: Optional[SlackClient] = None,
         rss_service: Optional[RSSService] = None,
         relevance_scorer: Optional[RelevanceScorer] = None,
+        feedback_service: Optional[FeedbackService] = None,
     ):
         self.slack = slack_client or get_slack_client()
         self.rss_service = rss_service or RSSService()
         self.relevance_scorer = relevance_scorer or get_relevance_scorer()
+        self.feedback_service = feedback_service or get_feedback_service()
         self.settings = get_settings()
 
     def _parse_published_date(self, entry: dict) -> Optional[datetime]:
@@ -244,6 +247,20 @@ class RSSMonitor:
         if score_result["score"] < self.settings.relevance_threshold:
             return False
 
+        # Get voice feedback and generate news reaction with it
+        voice_feedback = await self.feedback_service.get_feedback_for_prompt()
+        suggested_content = await self.relevance_scorer.generate_news_reaction(
+            source=source.name,
+            headline=item.title,
+            summary=item.summary or "",
+            market_context=score_result.get("reasoning", ""),
+            voice_feedback=voice_feedback,
+        )
+
+        # Skip if no content generated
+        if not suggested_content or not suggested_content.strip():
+            return False
+
         # Send Slack notification
         time_ago = self._format_time_ago(item.published_at)
 
@@ -254,7 +271,7 @@ class RSSMonitor:
             link=item.url,
             category=source.category,
             time_ago=time_ago,
-            suggested_post=score_result.get("suggested_content", ""),
+            suggested_post=suggested_content,
             urgency="high" if score_result["score"] >= 0.9 else "normal",
         )
 
