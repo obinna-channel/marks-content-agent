@@ -3,68 +3,91 @@
 from src.config import VOICE_PROFILE, CONTENT_PILLARS, RELEVANCE_KEYWORDS
 
 # =============================================================================
-# RELEVANCE SCORING PROMPTS
+# COMBINED EVALUATION + CONTENT GENERATION PROMPTS
 # =============================================================================
 
-RELEVANCE_SYSTEM_PROMPT = """You are a relevance scoring assistant for Marks Exchange, a perpetual futures trading platform for global currencies - both emerging markets (NGN, ARS, COP) and developed markets (EUR, GBP, JPY, CHF, etc.).
+EVALUATE_CONTENT_SYSTEM_PROMPT = f"""You are the content strategist for Marks Exchange, a perpetual futures trading platform for global currencies - both emerging markets (NGN, ARS, COP) and developed markets (EUR, GBP, JPY, CHF, etc.).
 
-Your job is to evaluate tweets and news articles and determine:
-1. Whether they are relevant to Marks' audience
-2. What type of content opportunity they represent
-3. What content Marks should create in response
+Your job is to evaluate content and decide whether Marks should react to it. If yes, generate the post. If no, skip it.
 
-## What Makes Content Relevant
+{VOICE_PROFILE}
 
-HIGH RELEVANCE (0.8-1.0):
-- Central bank announcements (Fed, ECB, BOJ, BOE, CBN, BCRA, BanRep) about rates, policy, FX
-- Major currency moves (EUR, GBP, JPY, NGN, ARS, COP - any significant FX movement)
-- Breaking news about inflation, monetary policy in any major economy
-- Stablecoin news: Tether, Circle, USDT, USDC, regulatory changes, new stablecoin launches
-- Non-US stablecoins: EURC, euro stablecoins, stablecoin FX, MiCA regulation
-- DeFi perpetuals news that directly relates to our product category
-- High-engagement posts from influencers asking about hedging/FX trading
+## DECISION CRITERIA - Be Strict
 
-MEDIUM RELEVANCE (0.5-0.79):
-- General macroeconomic news (any region)
-- Crypto market news that affects stablecoins indirectly
-- Educational content opportunities about FX/perpetuals/stablecoins
-- Posts discussing currency volatility without specific actionable news
+Only react to content that has SPECIFIC, ACTIONABLE information with real data. Ask yourself: "Does this contain concrete numbers or facts we can reference?" If no, SKIP.
 
-LOW RELEVANCE (0.0-0.49):
-- General crypto news unrelated to FX/currencies/stablecoins
-- Political news without economic implications
-- Unrelated DeFi protocols (NFTs, memecoins, etc.)
-- Spam or promotional content
+### REACT to (generate content):
+- Central bank announcements WITH specific numbers (rate %, reserve figures)
+- Major currency moves WITH percentages or price levels
+- Inflation data WITH actual figures
+- Stablecoin news WITH concrete details (volume, dates, regulatory decisions)
+- High-engagement posts explicitly asking about hedging/FX (reply opportunity)
 
-## Content Types
+### SKIP (do not generate content):
+- Vague political news even if it mentions a relevant country
+- "Possible scenarios" or "paths forward" without concrete policy/data
+- General commentary without specific numbers
+- Political news without EXPLICIT, QUANTIFIED economic impact
+- Speculation or opinion without hard data
+- News that would require us to speculate to connect to FX/markets
 
-- "news": Breaking news worth reacting to with a post
-- "reply_opportunity": A post worth replying to for engagement
-- "skip": Not relevant enough to act on
+### Examples to SKIP:
+- "Colombia's three possible paths with the US" → No data, skip
+- "Argentina considers new measures" → No specifics, skip
+- "Experts discuss inflation outlook" → Commentary not news, skip
+- "Nigeria faces economic challenges" → No concrete data, skip
 
-## Response Format
+### Examples to REACT:
+- "CBN holds rates at 27.5%" → Specific rate, react
+- "ARS devalues 15% overnight" → Specific move, react
+- "Colombia inflation hits 12.3%" → Specific data, react
 
-Always respond with valid JSON:
-{
-    "score": 0.0-1.0,
-    "type": "news" | "reply_opportunity" | "skip",
-    "reasoning": "Brief explanation",
-    "suggested_content": "Draft post or reply if relevant"
-}
+## CONTENT GUIDELINES (when generating)
+
+- Lead with the news, not with Marks
+- Include specific numbers from the source
+- Use "BREAKING:" only for genuinely breaking news
+- Keep under 280 characters when possible
+- Only mention Marks if there's a natural connection
+- Don't force a Marks plug if it doesn't fit
+
+## RESPONSE FORMAT
+
+Return JSON:
+{{
+    "action": "post" | "reply" | "skip",
+    "reasoning": "Brief explanation of decision",
+    "content": "The post/reply text if action is post/reply, null if skip"
+}}
 """
 
-RELEVANCE_USER_TEMPLATE = """Evaluate this content for Marks Exchange:
+EVALUATE_TWEET_USER_TEMPLATE = """Evaluate this tweet and decide whether Marks should react:
 
-Source: {source_type}
 Account: @{account_handle}
 Category: {category}
 Followers: {follower_count:,}
 Engagement: {engagement_info}
 
-Content:
+Tweet:
 "{content}"
 
-Respond with JSON evaluation."""
+{voice_feedback_section}
+
+Return JSON with your decision and content (if reacting)."""
+
+EVALUATE_ARTICLE_USER_TEMPLATE = """Evaluate this news article and decide whether Marks should react:
+
+Source: {source_name}
+Category: {category}
+
+Headline: {title}
+
+Summary:
+{summary}
+
+{voice_feedback_section}
+
+Return JSON with your decision and content (if reacting)."""
 
 
 # =============================================================================
@@ -229,24 +252,50 @@ VOICE_FEEDBACK_TEMPLATE = """## Voice Preferences (learned from feedback)
 Apply these preferences to your generation."""
 
 
-def get_relevance_prompt(
+def get_evaluate_tweet_prompt(
     content: str,
-    source_type: str,
     account_handle: str,
     category: str,
     follower_count: int,
     engagement_info: str,
+    voice_feedback: str = "",
 ) -> tuple[str, str]:
-    """Get system and user prompts for relevance scoring."""
-    user_prompt = RELEVANCE_USER_TEMPLATE.format(
-        source_type=source_type,
+    """Get system and user prompts for combined tweet evaluation + content generation."""
+    voice_section = ""
+    if voice_feedback:
+        voice_section = f"## Voice Preferences (from feedback)\n{voice_feedback}"
+
+    user_prompt = EVALUATE_TWEET_USER_TEMPLATE.format(
         account_handle=account_handle,
         category=category,
         follower_count=follower_count,
         engagement_info=engagement_info,
         content=content,
+        voice_feedback_section=voice_section,
     )
-    return RELEVANCE_SYSTEM_PROMPT, user_prompt
+    return EVALUATE_CONTENT_SYSTEM_PROMPT, user_prompt
+
+
+def get_evaluate_article_prompt(
+    title: str,
+    summary: str,
+    source_name: str,
+    category: str,
+    voice_feedback: str = "",
+) -> tuple[str, str]:
+    """Get system and user prompts for combined article evaluation + content generation."""
+    voice_section = ""
+    if voice_feedback:
+        voice_section = f"## Voice Preferences (from feedback)\n{voice_feedback}"
+
+    user_prompt = EVALUATE_ARTICLE_USER_TEMPLATE.format(
+        source_name=source_name,
+        category=category,
+        title=title,
+        summary=summary or "No summary available",
+        voice_feedback_section=voice_section,
+    )
+    return EVALUATE_CONTENT_SYSTEM_PROMPT, user_prompt
 
 
 def get_weekly_batch_prompt(

@@ -148,11 +148,11 @@ class TwitterMonitor:
         relevance_scorer,  # Will be passed from agent module
     ) -> bool:
         """
-        Process a tweet: score relevance, generate content, and notify if relevant.
+        Process a tweet: evaluate and generate content in one call, notify if relevant.
 
         Args:
             tweet_data: Dict with tweet, raw data, and account
-            relevance_scorer: RelevanceScorer instance for scoring
+            relevance_scorer: RelevanceScorer instance
 
         Returns:
             True if tweet was relevant and notified
@@ -161,63 +161,45 @@ class TwitterMonitor:
         raw = tweet_data["raw"]
         account = tweet_data["account"]
 
-        # Score relevance
-        score_result = await relevance_scorer.score_tweet(
+        # Get voice feedback for evaluation
+        voice_feedback = await self.feedback_service.get_feedback_for_prompt()
+
+        # Single call: evaluate relevance AND generate content if relevant
+        result = await relevance_scorer.evaluate_tweet(
             tweet_text=tweet.content,
             account_handle=account.twitter_handle,
             account_category=account.category,
             follower_count=account.follower_count,
             likes=raw.get("likes", 0),
+            retweets=raw.get("retweets", 0),
+            voice_feedback=voice_feedback,
         )
 
-        # Update tweet with relevance data
+        # Map action to RelevanceType for storage
+        action_to_type = {
+            "post": RelevanceType.NEWS,
+            "reply": RelevanceType.REPLY_OPPORTUNITY,
+            "skip": RelevanceType.SKIP,
+        }
+        relevance_type = action_to_type.get(result["action"], RelevanceType.SKIP)
+
+        # Update tweet with evaluation data
         await self.tweet_service.update_relevance(
             tweet_id=tweet.id,
-            relevance_score=score_result["score"],
-            relevance_type=RelevanceType(score_result["type"]),
-            suggested_content=score_result.get("suggested_content"),
+            relevance_score=1.0 if result["action"] != "skip" else 0.0,
+            relevance_type=relevance_type,
+            suggested_content=result.get("content"),
         )
 
-        # Check if meets threshold
-        if score_result["score"] < self.settings.relevance_threshold:
-            return False
-
-        # Get voice feedback for content generation
-        voice_feedback = await self.feedback_service.get_feedback_for_prompt()
-
-        # Generate content with feedback based on type
-        suggested_content = None
-        if score_result["type"] == "reply_opportunity":
-            # Generate reply with voice feedback
-            account_context = f"{account.category.value.replace('_', ' ').title()} account"
-            topic = score_result.get("reasoning", "relevant discussion")
-            suggested_content = await relevance_scorer.generate_reply(
-                account_handle=account.twitter_handle,
-                follower_count=account.follower_count or 0,
-                tweet_content=tweet.content,
-                account_context=account_context,
-                topic=topic,
-                voice_feedback=voice_feedback,
-            )
-        else:
-            # Generate news reaction with voice feedback
-            suggested_content = await relevance_scorer.generate_news_reaction(
-                source=account.twitter_handle,
-                headline=tweet.content[:200] if len(tweet.content) > 200 else tweet.content,
-                summary=tweet.content,
-                market_context=score_result.get("reasoning", ""),
-                voice_feedback=voice_feedback,
-            )
-
-        # Skip if no suggested content generated
-        if not suggested_content or not suggested_content.strip():
+        # Skip if no content generated
+        if result["action"] == "skip" or not result.get("content"):
             return False
 
         # Send appropriate Slack notification
         time_ago = self._format_time_ago(tweet.tweet_created_at) if tweet.tweet_created_at else "just now"
         message_ts = None
 
-        if score_result["type"] == "reply_opportunity":
+        if result["action"] == "reply":
             opportunity = SlackReplyOpportunity(
                 account_handle=account.twitter_handle,
                 tweet_content=tweet.content,
@@ -225,7 +207,7 @@ class TwitterMonitor:
                 follower_count=account.follower_count or 0,
                 likes=raw.get("likes"),
                 time_ago=time_ago,
-                suggested_reply=suggested_content,
+                suggested_reply=result["content"],
             )
             message_ts = await self.slack.send_reply_opportunity(opportunity)
         else:
@@ -238,7 +220,7 @@ class TwitterMonitor:
                 category=account.category,
                 follower_count=account.follower_count,
                 time_ago=time_ago,
-                suggested_post=suggested_content,
+                suggested_post=result["content"],
                 urgency="high" if account.priority == 1 else "normal",
             )
             message_ts = await self.slack.send_news_alert(alert)

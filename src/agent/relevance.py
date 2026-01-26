@@ -1,4 +1,4 @@
-"""Relevance scoring for tweets and articles using Claude API."""
+"""Content evaluation and generation using Claude API."""
 
 import json
 from typing import Optional, Dict, Any
@@ -7,11 +7,16 @@ import anthropic
 
 from src.config import get_settings, RELEVANCE_KEYWORDS
 from src.models.content import AccountCategory, RelevanceType
-from .prompts import get_relevance_prompt, get_news_reaction_prompt, get_reply_prompt
+from .prompts import (
+    get_evaluate_tweet_prompt,
+    get_evaluate_article_prompt,
+    get_news_reaction_prompt,
+    get_reply_prompt,
+)
 
 
 class RelevanceScorer:
-    """Score content for relevance and generate suggested responses."""
+    """Evaluate content and generate posts/replies using a single Claude call."""
 
     def __init__(self, api_key: Optional[str] = None):
         settings = get_settings()
@@ -28,6 +33,163 @@ class RelevanceScorer:
         """Quick check if content contains any relevant keywords."""
         content_lower = content.lower()
         return any(kw.lower() in content_lower for kw in RELEVANCE_KEYWORDS)
+
+    def _parse_json_response(self, response_text: str) -> dict:
+        """Parse JSON from Claude response, handling markdown code blocks."""
+        text = response_text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if "```" in text:
+                text = text.rsplit("```", 1)[0]
+            text = text.strip()
+        return json.loads(text)
+
+    async def evaluate_tweet(
+        self,
+        tweet_text: str,
+        account_handle: str,
+        account_category: AccountCategory,
+        follower_count: Optional[int] = None,
+        likes: int = 0,
+        retweets: int = 0,
+        voice_feedback: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Evaluate a tweet and generate content if relevant (single Opus call).
+
+        Args:
+            tweet_text: The tweet content
+            account_handle: Twitter handle
+            account_category: Category of the account
+            follower_count: Number of followers
+            likes: Number of likes on the tweet
+            retweets: Number of retweets
+            voice_feedback: Voice preferences from user feedback
+
+        Returns:
+            Dict with action, reasoning, and content (None if skip)
+        """
+        # Quick keyword filter - skip API call if clearly irrelevant
+        if not self._quick_keyword_check(tweet_text):
+            return {
+                "action": "skip",
+                "reasoning": "No relevant keywords found",
+                "content": None,
+            }
+
+        # Build engagement info
+        engagement_parts = []
+        if likes:
+            engagement_parts.append(f"{likes:,} likes")
+        if retweets:
+            engagement_parts.append(f"{retweets:,} retweets")
+        engagement_info = ", ".join(engagement_parts) if engagement_parts else "N/A"
+
+        # Get prompts for combined evaluation + generation
+        system_prompt, user_prompt = get_evaluate_tweet_prompt(
+            content=tweet_text,
+            account_handle=account_handle,
+            category=account_category.value.replace("_", " ").title(),
+            follower_count=follower_count or 0,
+            engagement_info=engagement_info,
+            voice_feedback=voice_feedback,
+        )
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model="claude-opus-4-5-20251101",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+
+            result = self._parse_json_response(response.content[0].text)
+
+            return {
+                "action": result.get("action", "skip"),
+                "reasoning": result.get("reasoning", ""),
+                "content": result.get("content"),
+            }
+
+        except json.JSONDecodeError as e:
+            print(f"Error parsing evaluation response: {e}")
+            return {
+                "action": "skip",
+                "reasoning": f"Failed to parse response: {e}",
+                "content": None,
+            }
+
+    async def evaluate_article(
+        self,
+        title: str,
+        summary: str,
+        source_name: str,
+        category: AccountCategory,
+        url: Optional[str] = None,
+        voice_feedback: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Evaluate an RSS article and generate content if relevant (single Opus call).
+
+        Args:
+            title: Article title
+            summary: Article summary/description
+            source_name: Name of the RSS source
+            category: Category of the source
+            url: Article URL (for reference)
+            voice_feedback: Voice preferences from user feedback
+
+        Returns:
+            Dict with action, reasoning, and content (None if skip)
+        """
+        content = f"{title}\n\n{summary}" if summary else title
+
+        # Quick keyword filter
+        if not self._quick_keyword_check(content):
+            return {
+                "action": "skip",
+                "reasoning": "No relevant keywords found",
+                "content": None,
+            }
+
+        # Get prompts for combined evaluation + generation
+        system_prompt, user_prompt = get_evaluate_article_prompt(
+            title=title,
+            summary=summary or "",
+            source_name=source_name,
+            category=category.value.replace("_", " ").title(),
+            voice_feedback=voice_feedback,
+        )
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model="claude-opus-4-5-20251101",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+
+            result = self._parse_json_response(response.content[0].text)
+
+            return {
+                "action": result.get("action", "skip"),
+                "reasoning": result.get("reasoning", ""),
+                "content": result.get("content"),
+            }
+
+        except json.JSONDecodeError as e:
+            print(f"Error parsing article evaluation response: {e}")
+            return {
+                "action": "skip",
+                "reasoning": f"Failed to parse response: {e}",
+                "content": None,
+            }
+
+    # =========================================================================
+    # DEPRECATED: Old two-step methods kept for backward compatibility
+    # =========================================================================
 
     async def score_tweet(
         self,

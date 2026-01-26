@@ -216,7 +216,7 @@ class RSSMonitor:
 
     async def process_item(self, item_data: Dict[str, Any]) -> bool:
         """
-        Process an RSS item: score relevance and notify if relevant.
+        Process an RSS item: evaluate and generate content in one call, notify if relevant.
 
         Args:
             item_data: Dict with item and source
@@ -227,38 +227,28 @@ class RSSMonitor:
         item = item_data["item"]
         source = item_data["source"]
 
-        # Score relevance
-        score_result = await self.relevance_scorer.score_article(
+        # Get voice feedback for evaluation
+        voice_feedback = await self.feedback_service.get_feedback_for_prompt()
+
+        # Single call: evaluate relevance AND generate content if relevant
+        result = await self.relevance_scorer.evaluate_article(
             title=item.title,
             summary=item.summary or "",
             source_name=source.name,
             category=source.category,
             url=item.url,
-        )
-
-        # Update item with relevance data
-        await self.rss_service.update_item_relevance(
-            item_id=item.id,
-            relevance_score=score_result["score"],
-            suggested_content=score_result.get("suggested_content"),
-        )
-
-        # Check if meets threshold
-        if score_result["score"] < self.settings.relevance_threshold:
-            return False
-
-        # Get voice feedback and generate news reaction with it
-        voice_feedback = await self.feedback_service.get_feedback_for_prompt()
-        suggested_content = await self.relevance_scorer.generate_news_reaction(
-            source=source.name,
-            headline=item.title,
-            summary=item.summary or "",
-            market_context=score_result.get("reasoning", ""),
             voice_feedback=voice_feedback,
         )
 
+        # Update item with evaluation data
+        await self.rss_service.update_item_relevance(
+            item_id=item.id,
+            relevance_score=1.0 if result["action"] != "skip" else 0.0,
+            suggested_content=result.get("content"),
+        )
+
         # Skip if no content generated
-        if not suggested_content or not suggested_content.strip():
+        if result["action"] == "skip" or not result.get("content"):
             return False
 
         # Send Slack notification
@@ -271,8 +261,8 @@ class RSSMonitor:
             link=item.url,
             category=source.category,
             time_ago=time_ago,
-            suggested_post=suggested_content,
-            urgency="high" if score_result["score"] >= 0.9 else "normal",
+            suggested_post=result["content"],
+            urgency="normal",
         )
 
         await self.slack.send_news_alert(alert)
